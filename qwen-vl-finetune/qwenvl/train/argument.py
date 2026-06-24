@@ -13,6 +13,30 @@ class ModelArguments:
 @dataclass
 class DataArguments:
     dataset_use: str = field(default="")
+    robotwin_data_root: Optional[str] = field(
+        default=None,
+        metadata={"help": "Root path of the RobotWin LeRobot dataset."},
+    )
+    robotwin_test_ratio: float = field(
+        default=0.05,
+        metadata={"help": "Fraction of RobotWin task directories held out for test/eval."},
+    )
+    robotwin_split_seed: int = field(
+        default=0,
+        metadata={"help": "Seed for deterministic RobotWin task-level train/test split."},
+    )
+    robotwin_q2_frame_stride: int = field(
+        default=8,
+        metadata={"help": "Frame stride for regular RobotWin Q2 samples."},
+    )
+    robotwin_boundary_extra_frames: int = field(
+        default=2,
+        metadata={"help": "Deprecated compatibility option; RobotWin Q2 done frames are fixed to three-frame windows."},
+    )
+    robotwin_done_sample_prob: float = field(
+        default=0.4,
+        metadata={"help": "Probability of sampling RobotWin Q2 done examples during training."},
+    )
     data_flatten: bool = field(default=False)
     data_packing: bool = field(default=False)
     base_interval: int = field(default=2)
@@ -43,3 +67,14 @@ class TrainingArguments(transformers.TrainingArguments):
     lora_r: int = field(default=64)
     lora_alpha: int = field(default=128)
     lora_dropout: float = field(default=0.0)
+
+    ## RobotWin regression loss weights
+    robotwin_done_loss_weight: float = field(default=1.0)
+    robotwin_progress_loss_weight: float = field(default=1.0)
+    robotwin_replan_loss_weight: float = field(default=0.0)
+    robotwin_incident_loss_weight: float = field(default=0.0)
+    robotwin_train_query_embeddings: bool = field(default=True)
+    robotwin_init_checkpoint: Optional[str] = field(
+        default=None,
+        metadata={"help": "Optional RobotWin wrapper checkpoint (.bin or directory) to initialize from before training."},
+    )

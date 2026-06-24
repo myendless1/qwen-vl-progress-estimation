@@ -20,8 +20,8 @@ The `qwenvl` directory contains the following components:
 - `rope2d.py`: Provide RoPE implementation
 
 ### `tools`
-- `process_bbox.ipynb`: Convert bbox into QwenVL format. If you have grounding data, please refer this file to tranform your data.
-- `pack_data.py`: Pack data into even length buckets.
+- `tools/misc/process_bbox.ipynb`: Convert bbox into QwenVL format. If you have grounding data, please refer this file to tranform your data.
+- `tools/misc/pack_data.py`: Pack data into even length buckets.
 
 ## Requirements
 
@@ -212,7 +212,7 @@ configs = data_list(dataset_names)
   - One `<image>` tag in the question must correspond to exactly one image file  
   - Similarly, `<video>` tags must correspond to video files  
   - These special tokens should not appear in the answer text  
-- For open source data that might have missing images or other issues, you can verify data completeness using `tools/check_image.py`.  
+- For open source data that might have missing images or other issues, you can verify data completeness using `tools/misc/check_image.py`.  
 
 
 ## Usage
@@ -309,10 +309,9 @@ The script accepts arguments in three categories:
 
    - Flags to control which components to tune (`tune_mm_vision`, `tune_mm_mlp`, `tune_mm_llm`). If trained with both image and video data, tune_mm_vision should be False: `tune_mm_vision=False`
    - `data_flatten` flag means data in a batch are concat into one sequence
-   - `data_packing` requires preprocess with `tools/pack_data.py`
+   - `data_packing` requires preprocess with `tools/misc/pack_data.py`
    - Training hyperparameters, the suggested learning rate is from 1e-6 to 2e-7
    - Training resolution is critical for the model performances, hence `--max_pixels` and `--min_pixels` should be properly set
    - Training with Qwen2.5-VL-32B model, you should have 8 80G GPU refering to `scripts/sft_32b.sh`
    - `"_attn_implementation": "flash_attention_2",` could be add in the config.json of the model to use flash attention.
    - The Qwen3VL MoE model does not support DeepSpeed with ZeRO-3. Additionally, Hugging Face’s official implementation does not include support for load balancing loss currently.
-
