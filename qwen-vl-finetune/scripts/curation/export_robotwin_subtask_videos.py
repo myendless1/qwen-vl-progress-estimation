@@ -61,6 +61,22 @@ def iter_repos(root: Path, only: str | None) -> list[Path]:
     return repos
 
 
+def select_one_repo_per_task(repos: list[Path]) -> list[Path]:
+    """Choose one deterministic repo for each task, preferring clean splits."""
+    selected: dict[str, Path] = {}
+    for repo in repos:
+        slug = task_slug(repo.name)
+        current = selected.get(slug)
+        if current is None:
+            selected[slug] = repo
+            continue
+        current_is_clean = "clean_50" in current.name
+        candidate_is_clean = "clean_50" in repo.name
+        if candidate_is_clean and not current_is_clean:
+            selected[slug] = repo
+    return [selected[slug] for slug in sorted(selected)]
+
+
 def video_feature_keys(info: dict[str, Any]) -> list[str]:
     features = info.get("features", {})
     return [key for key, spec in features.items() if isinstance(spec, dict) and spec.get("dtype") == "video"]
@@ -495,6 +511,11 @@ def main() -> None:
     parser.add_argument("--output", type=Path, default=None)
     parser.add_argument("--mode", choices=["review", "clips"], default="review")
     parser.add_argument("--sample-count", type=int, default=2, help="Episodes to sample per repo; <=0 means all.")
+    parser.add_argument(
+        "--one-per-task",
+        action="store_true",
+        help="Export from one repo per task (preferring clean_50), instead of every clean/randomized repo.",
+    )
     parser.add_argument("--selection", choices=["random", "first"], default="random")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--video-key", type=str, default=None, help="Full key or suffix, e.g. cam_main or cam_high.")
@@ -511,7 +532,11 @@ def main() -> None:
         output_root = args.output or (args.root / "_subtask_review_videos" / "subtask_split_review")
     all_records: list[dict[str, Any]] = []
 
-    for repo in iter_repos(args.root, args.only):
+    repos = iter_repos(args.root, args.only)
+    if args.one_per_task:
+        repos = select_one_repo_per_task(repos)
+
+    for repo in repos:
         info = read_json(repo / "meta" / "info.json")
         try:
             video_key = select_video_key(info, args.video_key)
