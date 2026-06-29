@@ -12,6 +12,12 @@ from PIL import Image
 from torch.utils.data import Dataset
 
 from .data_processor import IGNORE_INDEX, get_rope_index_2, get_rope_index_25, get_rope_index_3, pad_and_cat, update_processor_pixels
+from .robotwin_progress import (
+    build_subtask_progress_lookup,
+    episode_parquet_path,
+    load_episode_states,
+    progress_for_subtask,
+)
 
 
 QUERY_TOKENS = {
@@ -322,6 +328,16 @@ def build_robotwin_samples(
             }
             if not all(path.exists() for path in image_hdf5_paths.values()):
                 continue
+            state_parquet_path = episode_parquet_path(repo_dir, episode_index, chunks_size)
+            states = None
+            progress_lookup = None
+            if state_parquet_path.exists():
+                try:
+                    states = load_episode_states(state_parquet_path)
+                    progress_lookup = build_subtask_progress_lookup(states, subtasks, anno)
+                except Exception:
+                    states = None
+                    progress_lookup = None
             task_goal = anno["task_goal"]
             num_frames = int(anno["num_frames"])
 
@@ -343,11 +359,17 @@ def build_robotwin_samples(
             for idx, st in enumerate(subtasks):
                 start = int(st["start_frame"])
                 end = int(st["end_frame"])
-                denom = max(1, end - start)
+                curve = progress_lookup.get(start) if progress_lookup is not None else None
                 current_done_frames = clipped_frames(range(max(start, end - 2), end + 1), num_frames)
                 not_done_end = min(end, min(current_done_frames) - 1) if current_done_frames else end
                 for frame in range(start, not_done_end + 1, max(1, q2_frame_stride)):
-                    progress = max(0.0, min(1.0, (frame - start) / denom))
+                    progress = progress_for_subtask(
+                        st,
+                        frame,
+                        states=states,
+                        anno=anno,
+                        curve=curve,
+                    )
                     samples.append(
                         make_q2_sample(
                             repo_dir,

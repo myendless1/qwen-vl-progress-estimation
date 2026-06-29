@@ -16,6 +16,12 @@ from qwenvl.data.robotwin_processor import (
     _robotwin_repo_dirs,
     _view_hdf5_path,
 )
+from qwenvl.data.robotwin_progress import (
+    build_subtask_progress_lookup,
+    episode_parquet_path,
+    load_episode_states,
+    progress_for_subtask,
+)
 
 
 def subtask_index_for_frame(subtasks, frame: int) -> int:
@@ -26,17 +32,6 @@ def subtask_index_for_frame(subtasks, frame: int) -> int:
         if frame > int(subtasks[idx]["end_frame"]):
             return idx
     return 0
-
-
-def progress_for_subtask(subtask, frame: int) -> float:
-    start = int(subtask["start_frame"])
-    end = int(subtask["end_frame"])
-    denom = max(1, end - start)
-    if frame <= start:
-        return 0.0
-    if frame >= end:
-        return 1.0
-    return max(0.0, min(1.0, (frame - start) / denom))
 
 
 def build_episode_samples(
@@ -64,6 +59,17 @@ def build_episode_samples(
     first_frame = max(0, start_frame or 0)
     last_frame = num_frames - 1 if end_frame is None else min(num_frames - 1, end_frame)
 
+    progress_lookup = None
+    states = None
+    state_parquet_path = episode_parquet_path(repo_dir, episode_index, chunks_size)
+    if state_parquet_path.exists():
+        try:
+            states = load_episode_states(state_parquet_path)
+            progress_lookup = build_subtask_progress_lookup(states, subtasks, anno)
+        except Exception:
+            states = None
+            progress_lookup = None
+
     samples = []
     for frame in range(first_frame, last_frame + 1):
         current_idx = fixed_subtask_index
@@ -76,7 +82,14 @@ def build_episode_samples(
         end = int(current["end_frame"])
         done_start = max(start, end - 2)
         done = 1.0 if frame >= done_start else 0.0
-        progress = 1.0 if done else progress_for_subtask(current, frame)
+        curve = progress_lookup.get(start) if progress_lookup is not None else None
+        progress = 1.0 if done else progress_for_subtask(
+            current,
+            frame,
+            states=states,
+            anno=anno,
+            curve=curve,
+        )
         samples.append(
             RobotWinSample(
                 kind="q2",

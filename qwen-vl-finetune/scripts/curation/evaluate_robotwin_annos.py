@@ -14,7 +14,7 @@ from typing import Any
 import numpy as np
 
 
-DEFAULT_ROOT = Path("/media/damoxing/datasets/vae4d/lerobot-vae4d-org/robotwin")
+DEFAULT_ROOT = Path("/media/damoxing/datasets/vae4d/lerobot-vae4d-org/robotwin_gt_depth")
 DEFAULT_LOG_DIR = Path("/media/damoxing/fileset/Qwen3-VL/qwen-vl-finetune/scripts/curation/tests")
 
 LEFT_GRIPPER_DIM = 7

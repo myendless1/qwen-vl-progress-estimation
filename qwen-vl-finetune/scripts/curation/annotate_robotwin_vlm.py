@@ -35,7 +35,7 @@ from robotwin_vlm.task_rules import (
 )
 
 
-DEFAULT_ROOT = Path("/media/damoxing/datasets/vae4d/lerobot-vae4d-org/robotwin")
+DEFAULT_ROOT = Path("/media/damoxing/datasets/vae4d/lerobot-vae4d-org/robotwin_gt_depth")
 DEFAULT_RAW_ROOT = Path("/media/damoxing/datasets/RoboTwin2_0/dataset")
 
 
