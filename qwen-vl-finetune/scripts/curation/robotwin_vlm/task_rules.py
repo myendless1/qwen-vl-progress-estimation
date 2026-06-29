@@ -2,14 +2,21 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 
 from .models import GripperEvent, StepSpec, TaskBuilder, TaskContext
 from .primitives import (
+    close_gripper_text,
     distinct_pair,
     dual_pick_place_then_return,
+    grasp_steps,
     handover_steps,
+    move_to_grasp_text,
+    move_to_place_text,
+    open_gripper_text,
     pair_steps,
+    place_steps,
     pick_text,
     place_text,
 )
@@ -97,18 +104,20 @@ def build_place_can_basket_steps(
     basket_arm = close_events[1].arm if len(close_events) > 1 else None
     if basket_arm is None and can_arm in {"left", "right"}:
         basket_arm = "left" if can_arm == "right" else "right"
-    return [
-        StepSpec(pick_text(can, can_arm), "close", can_arm),
-        StepSpec(place_text(can, f"into the {basket}", can_arm), "open", can_arm),
-        StepSpec(
-            f"Return the {can_arm} arm to a neutral pose while the {basket_arm} arm grasps the {basket}."
-            if can_arm and basket_arm
-            else f"Prepare to grasp the {basket}.",
-            "close",
-            basket_arm,
-        ),
-        StepSpec(f"Lift the {basket}.", "final", basket_arm),
-    ]
+    return (
+        pair_steps(can, f"into the {basket}", can_arm)
+        + [
+            StepSpec(
+                f"Move the {basket_arm} arm to the grasp pose of the {basket} while returning the {can_arm} arm to a neutral pose."
+                if can_arm and basket_arm
+                else f"Move to the grasp pose of the {basket}.",
+                "move",
+                basket_arm,
+            ),
+            StepSpec(close_gripper_text(basket_arm), "close", basket_arm),
+            StepSpec(f"Lift the {basket} to a stable carrying height.", "move", basket_arm),
+        ]
+    )
 
 
 def ordinal_object(index: int, base: str = "bottle") -> str:
@@ -143,7 +152,7 @@ def build_put_bottles_dustbin_steps(
         next_close = next((j for j in range(i + 1, len(usable)) if usable[j].kind == "close"), None)
         next_open = next((j for j in range(i + 1, len(usable)) if usable[j].kind == "open"), None)
         if next_open is None:
-            steps.append(StepSpec(pick_text(obj, first_close.arm), "close", first_close.arm))
+            steps.extend(grasp_steps(obj, first_close.arm))
             break
 
         if next_close is not None and next_close < next_open:
@@ -160,40 +169,50 @@ def build_put_bottles_dustbin_steps(
             if receiver_open is None:
                 receiver_open = next_open
             if previous_place_arm and previous_place_arm != carrier:
-                steps.append(
-                    StepSpec(
-                        f"Return the {previous_place_arm} arm to a neutral pose while grasping the {obj} with the {carrier} arm.",
-                        "close",
-                        carrier,
-                    )
+                steps.extend(
+                    [
+                        StepSpec(
+                            f"Move the {carrier} arm to the grasp pose of the {obj} while returning the {previous_place_arm} arm to a neutral pose.",
+                            "move",
+                            carrier,
+                        ),
+                        StepSpec(close_gripper_text(carrier), "close", carrier),
+                    ]
                 )
             else:
-                steps.append(StepSpec(pick_text(obj, carrier), "close", carrier))
-            steps.append(StepSpec(f"Move the {obj} to the middle with the {carrier} arm.", "midpoint"))
-            steps.append(StepSpec(f"Grasp the {obj} with the {receiver} arm.", "close", receiver))
-            release_arm = carrier if carrier_open is not None else carrier
-            steps.append(
-                StepSpec(
-                    f"Open and return the {release_arm} arm to a neutral pose while placing the {obj} into the dustbin with the {receiver} arm.",
-                    "open",
-                    receiver,
-                )
+                steps.extend(grasp_steps(obj, carrier))
+            steps.append(StepSpec(f"Move the {obj} to the middle with the {carrier} arm.", "move"))
+            steps.extend(grasp_steps(obj, receiver))
+            if carrier_open is not None:
+                steps.append(StepSpec(open_gripper_text(carrier), "open", carrier))
+            steps.extend(
+                [
+                    StepSpec(
+                        f"Move the {receiver} arm to place the {obj} into the dustbin while returning the {carrier} arm to a neutral pose.",
+                        "move",
+                        receiver,
+                    ),
+                    StepSpec(open_gripper_text(receiver), "open", receiver),
+                ]
             )
             previous_place_arm = receiver
             i = receiver_open + 1
         else:
             arm = first_close.arm
             if previous_place_arm and previous_place_arm != arm:
-                steps.append(
-                    StepSpec(
-                        f"Return the {previous_place_arm} arm to a neutral pose while grasping the {obj} with the {arm} arm.",
-                        "close",
-                        arm,
-                    )
+                steps.extend(
+                    [
+                        StepSpec(
+                            f"Move the {arm} arm to the grasp pose of the {obj} while returning the {previous_place_arm} arm to a neutral pose.",
+                            "move",
+                            arm,
+                        ),
+                        StepSpec(close_gripper_text(arm), "close", arm),
+                    ]
                 )
             else:
-                steps.append(StepSpec(pick_text(obj, arm), "close", arm))
-            steps.append(StepSpec(place_text(obj, "into the dustbin", arm), "open", arm))
+                steps.extend(grasp_steps(obj, arm))
+            steps.extend(place_steps(obj, "into the dustbin", arm))
             previous_place_arm = arm
             i = next_open + 1
         obj_index += 1
@@ -207,17 +226,23 @@ def build_put_object_cabinet_steps(ctx: TaskContext) -> list[StepSpec]:
     object_arm = close_events[0].arm if close_events else None
     handle_arm = close_events[1].arm if len(close_events) > 1 else None
     pull_arm = handle_arm or (open_events[0].arm if open_events else None)
-    if pull_arm and object_arm and pull_arm != object_arm:
-        pull = f"Pull open the cabinet with the {pull_arm} arm while holding the {obj} with the {object_arm} arm."
-    elif pull_arm:
+    if pull_arm:
         pull = f"Pull open the cabinet with the {pull_arm} arm."
     else:
         pull = "Pull open the cabinet."
     return [
-        StepSpec(pick_text(obj, object_arm), "close", object_arm),
-        StepSpec(f"Grasp the cabinet handle with the {handle_arm} arm." if handle_arm else "Grasp the cabinet handle.", "close", handle_arm),
-        StepSpec(pull, "open"),
-        StepSpec(f"Place the {obj} inside the cabinet with the {object_arm} arm." if object_arm else f"Place the {obj} inside the cabinet.", "final", object_arm),
+        *grasp_steps(obj, object_arm),
+        StepSpec(
+            f"Move the {handle_arm} arm to the cabinet handle."
+            if handle_arm
+            else "Move to the cabinet handle.",
+            "move",
+            handle_arm,
+        ),
+        StepSpec(close_gripper_text(handle_arm), "close", handle_arm),
+        StepSpec(pull, "move", pull_arm),
+        StepSpec(move_to_place_text(obj, "inside the cabinet", object_arm), "move", object_arm),
+        StepSpec(open_gripper_text(object_arm), "open", object_arm),
     ]
 
 
@@ -229,7 +254,9 @@ def blocks_ranking_rgb(ctx: TaskContext) -> list[StepSpec]:
         (info_obj(ctx.info, "{B}", "green block"), "at the middle position", arms[1]),
         (info_obj(ctx.info, "{C}", "blue block"), "at the left position", arms[2]),
     ]
-    return [step for obj, dst, arm in items for step in pair_steps(obj, dst, arm)]
+    return [step for obj, dst, arm in items for step in pair_steps(obj, dst, arm)] + [
+        StepSpec("Lift the arm after releasing the last block.", "move", arms[2])
+    ]
 
 
 @register("blocks_ranking_size")
@@ -240,7 +267,9 @@ def blocks_ranking_size(ctx: TaskContext) -> list[StepSpec]:
         (info_obj(ctx.info, "{B}", "medium block"), "at the middle position", arms[1]),
         (info_obj(ctx.info, "{A}", "large block"), "at the right position", arms[2]),
     ]
-    return [step for obj, dst, arm in items for step in pair_steps(obj, dst, arm)]
+    return [step for obj, dst, arm in items for step in pair_steps(obj, dst, arm)] + [
+        StepSpec("Lift the arm after releasing the last block.", "move", arms[2])
+    ]
 
 
 @register("stack_blocks_three")
@@ -249,13 +278,16 @@ def stack_blocks_three(ctx: TaskContext) -> list[StepSpec]:
         pair_steps("red block", "at the center as the base", ctx.arm_a)
         + pair_steps("green block", "on top of the red block", ctx.arm_b)
         + pair_steps("blue block", "on top of the green block", ctx.arm_c)
+        + [StepSpec("Lift the arm after releasing the last block.", "move", ctx.arm_c)]
     )
 
 
 @register("stack_blocks_two")
 def stack_blocks_two(ctx: TaskContext) -> list[StepSpec]:
-    return pair_steps("red block", "at the center as the base", ctx.arm_a) + pair_steps(
-        "green block", "on top of the red block", ctx.arm_b
+    return (
+        pair_steps("red block", "at the center as the base", ctx.arm_a)
+        + pair_steps("green block", "on top of the red block", ctx.arm_b)
+        + [StepSpec("Lift the arm after releasing the last block.", "move", ctx.arm_b)]
     )
 
 
@@ -266,14 +298,17 @@ def stack_bowls_three(ctx: TaskContext) -> list[StepSpec]:
         pair_steps(a if a != b else "base bowl", "at the base position", ctx.arm_a)
         + pair_steps(b if a != b else "middle bowl", "inside the base bowl", ctx.arm_b)
         + pair_steps(c if c != "target object" else "top bowl", "inside the stacked bowls", ctx.arm_c)
+        + [StepSpec("Lift the arm after releasing the last bowl.", "move", ctx.arm_c)]
     )
 
 
 @register("stack_bowls_two")
 def stack_bowls_two(ctx: TaskContext) -> list[StepSpec]:
     a, b = ctx.object_a, ctx.object_b
-    return pair_steps(a if a != b else "base bowl", "at the base position", ctx.arm_a) + pair_steps(
-        b if a != b else "top bowl", "inside the base bowl", ctx.arm_b
+    return (
+        pair_steps(a if a != b else "base bowl", "at the base position", ctx.arm_a)
+        + pair_steps(b if a != b else "top bowl", "inside the base bowl", ctx.arm_b)
+        + [StepSpec("Lift the arm after releasing the last bowl.", "move", ctx.arm_b)]
     )
 
 
@@ -292,11 +327,20 @@ TASK_BUILDERS["move_stapler_pad"] = simple_move_builder(
 TASK_BUILDERS["place_shoe"] = simple_move_builder("onto the mat")
 
 
+def avoid_arm_object_phrase(value: str, fallback: str) -> str:
+    if re.fullmatch(r"(?:the\s+)?(?:left|right)\s+arm", value.strip(), flags=re.IGNORECASE):
+        return fallback
+    return value
+
+
 def a2b_builder(side: str) -> TaskBuilder:
     def builder(ctx: TaskContext) -> list[StepSpec]:
         parsed = parse_a2b_objects_from_prompt(ctx.task_goal, side)
         moved, reference = parsed if parsed is not None else (ctx.object_a, ctx.object_b)
-        return pair_steps(moved, f"to the {side} of the {reference}", ctx.arm_a)
+        moved = avoid_arm_object_phrase(moved, "object")
+        reference = avoid_arm_object_phrase(reference, "reference object")
+        target_side = "right" if side == "left" else "left"
+        return pair_steps(moved, f"to the {target_side} of the {reference}", ctx.arm_a)
     return builder
 
 
@@ -313,22 +357,46 @@ def move_can_pot(ctx: TaskContext) -> list[StepSpec]:
 def place_bread_skillet(ctx: TaskContext) -> list[StepSpec]:
     bread = ctx.object_b if ctx.object_b != "target object" else "bread"
     skillet = ctx.object_a if ctx.object_a != "target object" else "skillet"
-    bread_arm = prompt_arm_near_object(ctx.task_goal, r"bread") or next(
+    bread_arm = next(
         (event.arm for event in ctx.events if event.kind == "open"),
-        ctx.arm_a,
+        prompt_arm_near_object(ctx.task_goal, r"bread") or ctx.arm_a,
     )
     skillet_arm = "left" if bread_arm == "right" else "right" if bread_arm == "left" else None
     return [
         StepSpec(
-            f"Grasp the {bread} with the {bread_arm} arm while grasping the {skillet} with the {skillet_arm} arm."
+            f"Move the {bread_arm} arm to the grasp pose of the {bread} while moving the {skillet_arm} arm to the grasp pose of the {skillet}."
             if bread_arm and skillet_arm
-            else f"Grasp the {bread} while grasping the {skillet}.",
-            "close",
+            else f"Move to the grasp pose of the {bread} and the {skillet}.",
+            "move",
         ),
         StepSpec(
-            f"Lift the {skillet} with the {skillet_arm} arm, then place the {bread} into the {skillet} with the {bread_arm} arm."
+            "Close the grippers of both arms.",
+            "close",
+        ),
+        StepSpec("Lift both objects to the middle position.", "move"),
+        StepSpec(
+            f"Move the {skillet_arm} arm to bring the {skillet} to the placement position."
             if bread_arm and skillet_arm
-            else f"Lift the {skillet}, then place the {bread} into the {skillet}.",
+            else f"Move the {skillet} to the placement position.",
+            "move",
+            skillet_arm,
+        ),
+        StepSpec(
+            f"Move the {bread_arm} arm above the {skillet}."
+            if bread_arm and skillet_arm
+            else f"Move the {bread} above the {skillet}.",
+            "move",
+            bread_arm,
+        ),
+        StepSpec(
+            f"Move the {bread_arm} arm to place the {bread} into the {skillet}."
+            if bread_arm and skillet_arm
+            else f"Move to place the {bread} into the {skillet}.",
+            "move",
+            bread_arm,
+        ),
+        StepSpec(
+            open_gripper_text(bread_arm),
             "open",
             bread_arm,
         ),
@@ -337,12 +405,37 @@ def place_bread_skillet(ctx: TaskContext) -> list[StepSpec]:
 
 @register("place_container_plate")
 def place_container_plate(ctx: TaskContext) -> list[StepSpec]:
-    return pair_steps(ctx.object_b, f"onto the {ctx.object_a}", ctx.arm_a)
+    obj = ctx.object_b if ctx.object_b != "target object" else "container"
+    return pair_steps(ctx.object_b, f"onto the {ctx.object_a}", ctx.arm_a) + [
+        StepSpec(
+            f"Lift the {ctx.arm_a} arm after releasing the {obj}." if ctx.arm_a else f"Lift after releasing the {obj}.",
+            "move",
+            ctx.arm_a,
+        ),
+    ]
 
 
 @register("place_empty_cup")
 def place_empty_cup(ctx: TaskContext) -> list[StepSpec]:
-    return pair_steps("cup", "onto the coaster", ctx.arm_a)
+    close_events = [event for event in ctx.events if event.kind == "close"]
+    arm = close_events[0].arm if close_events else ctx.arm_a
+    return [
+        StepSpec(
+            close_gripper_text(arm),
+            "close",
+            arm,
+            terminates_on=("current_arm_motion", "other_arm_motion"),
+        ),
+        StepSpec(move_to_grasp_text("cup", arm), "move", arm),
+        StepSpec(close_gripper_text(arm), "close", arm),
+        StepSpec(move_to_place_text("cup", "onto the coaster", arm), "move", arm),
+        StepSpec(open_gripper_text(arm), "open", arm),
+        StepSpec(
+            f"Lift the {arm} arm after releasing the cup." if arm else "Lift after releasing the cup.",
+            "move",
+            arm,
+        ),
+    ]
 
 
 @register("place_mouse_pad")
@@ -377,9 +470,15 @@ def place_fan(ctx: TaskContext) -> list[StepSpec]:
         ctx.task_goal,
         f"{ctx.object_b} mat" if ctx.object_b != "target object" else "mat",
     )
-    return [
-        StepSpec(pick_text(fan, ctx.arm_a), "close", ctx.arm_a),
-        StepSpec(f"Place the {fan} onto the {dst} and face it toward the robot.", "open", ctx.arm_a),
+    return grasp_steps(fan, ctx.arm_a) + [
+        StepSpec(
+            f"Move the {ctx.arm_a} arm to place the {fan} onto the {dst} and face it toward the robot."
+            if ctx.arm_a
+            else f"Move to place the {fan} onto the {dst} and face it toward the robot.",
+            "move",
+            ctx.arm_a,
+        ),
+        StepSpec(open_gripper_text(ctx.arm_a), "open", ctx.arm_a),
     ]
 
 
@@ -391,23 +490,242 @@ def place_burger_fries(ctx: TaskContext) -> list[StepSpec]:
     return dual_pick_place_then_return(burger, fries, f"onto the {tray}")
 
 
-def dual_container_builder(first: str, second: str, fallback_target: str, target_attr: str) -> TaskBuilder:
+def clean_bread_prompt_text(value: str) -> str:
+    value = value.replace("bread basket", "breadbasket")
+    value = clean_duplicate_articles(value)
+    return " ".join(value.strip().strip(" .;,").split())
+
+
+def clean_duplicate_articles(value: str) -> str:
+    previous = None
+    while previous != value:
+        previous = value
+        value = re.sub(r"\b(the|a|an)\s+\1\b", r"\1", value, flags=re.IGNORECASE)
+    return " ".join(value.split())
+
+
+def breadbasket_preposition_pattern() -> re.Pattern[str]:
+    actions = (
+        r"place|put|set|drop|move|transfer|grab|grasp|pick(?:\s+up)?|"
+        r"lift|take|shift"
+    )
+    return re.compile(
+        r"\b(?:into|inside|onto|in|to|for)\s+(?:(?:the|a|an)\s+){0,3}"
+        rf"(?!(?:{actions})\b)"
+        r"(?P<target>[^.,;]*?\b(?:breadbasket|basket)\b[^.,;]*)",
+        flags=re.IGNORECASE,
+    )
+
+
+def contains_bread_object(value: str) -> bool:
+    return bool(re.search(r"\b(?:bread|loaf)\b", value, flags=re.IGNORECASE))
+
+
+def strip_bread_action_prefix(value: str) -> str:
+    patterns = [
+        r"^(?:simultaneously\s+)?use\s+(?:the\s+)?(?:left|right|dual)\s+arm\s+to\s+(?:grab|grasp|drop|move|place|set|pick(?:\s+up)?|lift)\s+",
+        r"^use\s+(?:two|both)\s+arms?\s+(?:and\s+)?(?:to\s+)?(?:grab|grasp|drop|move|place|set|pick(?:\s+up)?|lift)\s+",
+        r"^(?:simultaneously\s+)?(?:grab|grasp|pick(?:\s+up)?|take|lift|drop|shift|move|put|place|set)\s+(?:both\s+)?(?:two\s+breads?\s+)?",
+    ]
+    previous = None
+    while previous != value:
+        previous = value
+        for pattern in patterns:
+            value = re.sub(pattern, "", value, count=1, flags=re.IGNORECASE)
+    return value
+
+
+def normalize_bread_object(value: str) -> str:
+    value = clean_bread_prompt_text(value)
+    value = re.split(
+        r",?\s*(?:then|and)\s+(?:place|put|set|drop|move|transfer)\b",
+        value,
+        maxsplit=1,
+        flags=re.IGNORECASE,
+    )[0]
+    value = re.sub(
+        r"\s+(?:using|with)\s+(?:the\s+)?(?:left|right|dual|both|one|two)\s+arms?\b.*$",
+        "",
+        value,
+        flags=re.IGNORECASE,
+    )
+    value = re.sub(r"\s+with\s+an?\s+arm\b.*$", "", value, flags=re.IGNORECASE)
+    value = re.sub(r"\s+\b(?:at once|together|quickly)\b", "", value, flags=re.IGNORECASE)
+    value = strip_bread_action_prefix(value)
+    value = re.sub(r"^(?:both\s+)?(?:the|a|an)\s+", "", value, flags=re.IGNORECASE)
+    return clean_bread_prompt_text(value)
+
+
+def split_bread_objects(segment: str) -> list[str]:
+    segment = normalize_bread_object(segment)
+    comma_parts = [
+        normalize_bread_object(part)
+        for part in re.split(r"\s*,\s*", segment)
+        if normalize_bread_object(part)
+    ]
+    if len(comma_parts) >= 2 and all(contains_bread_object(part) for part in comma_parts[:2]):
+        return comma_parts[:2]
+
+    candidates: list[tuple[int, int, str, str]] = []
+    for match in re.finditer(r"\s+and\s+", segment, flags=re.IGNORECASE):
+        left = segment[: match.start()]
+        right = segment[match.end() :]
+        if not contains_bread_object(left) or not contains_bread_object(right):
+            continue
+        right_starts_with_article = bool(
+            re.match(r"(?:both\s+)?(?:the|a|an)\s+", right, flags=re.IGNORECASE)
+        )
+        candidates.append((0 if right_starts_with_article else 1, match.start(), left, right))
+    if candidates:
+        _, _, left, right = sorted(candidates)[0]
+        return [normalize_bread_object(left), normalize_bread_object(right)]
+    return [segment] if segment else []
+
+
+def prompt_bread_basket_target(task_goal: str, fallback: str = "breadbasket") -> str:
+    text = clean_bread_prompt_text(task_goal)
+    matches = list(breadbasket_preposition_pattern().finditer(text))
+    if not matches:
+        return fallback
+    target = matches[-1].group("target")
+    target = re.split(
+        r"\b(?:after|before|using\s+(?:the\s+)?(?:left|right|dual|both|one|two)\s+arms?|with\s+(?:the\s+)?(?:left|right|dual|both|one|two)\s+arms?|with\s+an?\s+arm)\b",
+        target,
+        maxsplit=1,
+        flags=re.IGNORECASE,
+    )[0]
+    target = re.sub(r"^(?:the|a|an)\s+", "", target, flags=re.IGNORECASE)
+    return clean_bread_prompt_text(target) or fallback
+
+
+def prompt_bread_basket_objects(task_goal: str) -> list[str]:
+    text = clean_bread_prompt_text(task_goal)
+    target_match = None
+    matches = list(breadbasket_preposition_pattern().finditer(text))
+    if matches:
+        target_match = matches[-1]
+    segment = text[: target_match.start()] if target_match else text
+    segment = re.split(
+        r",\s*(?:then\s+)?(?:put|place|drop|set|move|transfer)\b",
+        segment,
+        maxsplit=1,
+        flags=re.IGNORECASE,
+    )[0]
+    segment = re.split(
+        r"\b(?:then|and)\s+(?:place|put|set|drop|move|transfer)\b",
+        segment,
+        maxsplit=1,
+        flags=re.IGNORECASE,
+    )[0]
+    objects = [item for item in split_bread_objects(segment) if contains_bread_object(item)]
+    return objects[:2]
+
+
+def distinct_bread_objects(first: str, second: str) -> tuple[str, str]:
+    if first == second:
+        return f"first {first}", f"second {second}"
+    return first, second
+
+
+def bread_pick_place_steps(obj: str, dst: str, arm: str | None) -> list[StepSpec]:
+    lift_text = f"Lift the {arm} arm after releasing the {obj}." if arm else f"Lift after releasing the {obj}."
+    return [
+        StepSpec(move_to_grasp_text(obj, arm), "move", arm),
+        StepSpec(close_gripper_text(arm), "close", arm),
+        StepSpec(move_to_place_text(obj, dst, arm), "move", arm),
+        StepSpec(open_gripper_text(arm), "open", arm),
+        StepSpec(lift_text, "move", arm),
+    ]
+
+
+@register("place_bread_basket")
+def place_bread_basket(ctx: TaskContext) -> list[StepSpec]:
+    close_events = [event for event in ctx.events if event.kind == "close"]
+    target = prompt_bread_basket_target(ctx.task_goal)
+    dst = f"into the {target}"
+    objects = prompt_bread_basket_objects(ctx.task_goal)
+    if not objects:
+        objects = ["bread"]
+
+    simultaneous_dual = (
+        len(close_events) >= 2
+        and close_events[0].arm != close_events[1].arm
+        and abs(close_events[0].frame - close_events[1].frame) <= 3
+    )
+    if simultaneous_dual:
+        while len(objects) < 2:
+            objects.append("bread")
+        first, second = distinct_bread_objects(objects[0], objects[1])
+        first_arm = close_events[0].arm
+        second_arm = close_events[1].arm
+        return [
+            StepSpec(
+                f"Move the {first_arm} arm to the grasp pose of the {first} while moving the {second_arm} arm to the grasp pose of the {second}.",
+                "move",
+            ),
+            StepSpec("Close the grippers of both arms.", "close"),
+            StepSpec(
+                f"Lift the {first} and the {second} to the middle position with the corresponding arms.",
+                "move",
+            ),
+            StepSpec(move_to_place_text(first, dst, first_arm), "move", first_arm),
+            StepSpec(open_gripper_text(first_arm), "open", first_arm),
+            StepSpec(f"Lift the {first_arm} arm after releasing the {first}.", "move", first_arm),
+            StepSpec(
+                f"Move the {second_arm} arm to the place pose of the {second} {dst} "
+                f"while returning the {first_arm} arm to a neutral pose.",
+                "move",
+                second_arm,
+                terminates_on=("gripper_open",),
+            ),
+            StepSpec(open_gripper_text(second_arm), "open", second_arm),
+            StepSpec(f"Lift the {second_arm} arm after releasing the {second}.", "move", second_arm),
+        ]
+
+    usable_closes = close_events[:2] if close_events else []
+    if not usable_closes:
+        return bread_pick_place_steps(objects[0], dst, ctx.arm_a)
+    steps: list[StepSpec] = []
+    for index, close_event in enumerate(usable_closes):
+        obj = objects[index] if index < len(objects) else f"bread {index + 1}"
+        steps.extend(bread_pick_place_steps(obj, dst, close_event.arm))
+    return steps
+
+
+def dual_container_builder(
+    first: str,
+    second: str,
+    fallback_target: str,
+    target_attr: str,
+    *,
+    lift_between_releases: bool = True,
+    lift_after_final_release: bool = True,
+    first_place_terminates_on: tuple[str, ...] = (),
+) -> TaskBuilder:
     def builder(ctx: TaskContext) -> list[StepSpec]:
         target = getattr(ctx, target_attr)
         if target == "target object":
             target = fallback_target
-        return dual_pick_place_then_return(first, second, f"into the {target}")
+        return dual_pick_place_then_return(
+            first,
+            second,
+            f"into the {target}",
+            lift_between_releases=lift_between_releases,
+            lift_after_final_release=lift_after_final_release,
+            first_place_terminates_on=first_place_terminates_on,
+        )
     return builder
 
 
-TASK_BUILDERS["place_bread_basket"] = dual_container_builder(
-    "right bread", "left bread", "bread basket", "object_a"
-)
 TASK_BUILDERS["place_cans_plasticbox"] = dual_container_builder(
-    "right can", "left can", "plastic box", "object_b"
+    "right can", "left can", "plastic box", "object_b",
+    lift_between_releases=False,
+    first_place_terminates_on=("gripper_open", "gripper_close"),
 )
 TASK_BUILDERS["place_dual_shoes"] = dual_container_builder(
-    "right shoe", "left shoe", "shoe box", "object_b"
+    "right shoe", "left shoe", "shoe box", "object_b",
+    lift_between_releases=False, lift_after_final_release=False,
+    first_place_terminates_on=("gripper_open", "gripper_close"),
 )
 
 
@@ -435,27 +753,99 @@ TASK_BUILDERS["put_object_cabinet"] = build_put_object_cabinet_steps
 
 @register("handover_block")
 def handover_block(ctx: TaskContext) -> list[StepSpec]:
-    return handover_steps(
-        "red block",
-        "Place the red block on the target pad with the receiving arm while returning the first arm to a neutral pose.",
-        "open",
+    close_events = [event for event in ctx.events if event.kind == "close"]
+    open_events = [event for event in ctx.events if event.kind == "open"]
+    first_arm = close_events[0].arm if close_events else ctx.arm_a or "left"
+    receiving_arm = (
+        close_events[1].arm
+        if len(close_events) > 1
+        else ("right" if first_arm == "left" else "left")
     )
+    first_open_arm = open_events[0].arm if open_events else first_arm
+    receiving_open_arm = open_events[1].arm if len(open_events) > 1 else receiving_arm
+    return [
+        StepSpec(move_to_grasp_text("red block", first_arm), "move", first_arm),
+        StepSpec(close_gripper_text(first_arm), "close", first_arm),
+        StepSpec(f"Move the red block to the handover position with the {first_arm} arm.", "move", first_arm),
+        StepSpec(move_to_grasp_text("red block", receiving_arm), "move", receiving_arm),
+        StepSpec(close_gripper_text(receiving_arm), "close", receiving_arm),
+        StepSpec(open_gripper_text(first_open_arm), "open", first_open_arm),
+        StepSpec(
+            f"Return the {first_open_arm} arm to a neutral pose.",
+            "move",
+            first_open_arm,
+        ),
+        StepSpec(
+            f"Return the {first_open_arm} arm to a neutral pose while moving the {receiving_arm} arm to place the red block on the target pad.",
+            "move",
+            receiving_arm,
+            terminates_on=("gripper_open",),
+        ),
+        StepSpec(open_gripper_text(receiving_open_arm), "open", receiving_open_arm),
+    ]
 
 
 @register("handover_mic")
 def handover_mic(ctx: TaskContext) -> list[StepSpec]:
-    return handover_steps(ctx.object_a, f"Hold the {ctx.object_a} securely with the receiving arm.")
+    obj = ctx.object_a if ctx.object_a != "target object" else "microphone"
+    close_events = [event for event in ctx.events if event.kind == "close"]
+    open_events = [event for event in ctx.events if event.kind == "open"]
+    first_arm = close_events[0].arm if close_events else ctx.arm_a or "left"
+    receiving_arm = (
+        close_events[1].arm
+        if len(close_events) > 1
+        else ("right" if first_arm == "left" else "left")
+    )
+    release_arm = open_events[0].arm if open_events else first_arm
+    return [
+        StepSpec(move_to_grasp_text(obj, first_arm), "move", first_arm),
+        StepSpec(close_gripper_text(first_arm), "close", first_arm),
+        StepSpec(f"Move the {obj} to the handover position with the {first_arm} arm.", "move", first_arm),
+        StepSpec(move_to_grasp_text(obj, receiving_arm), "move", receiving_arm),
+        StepSpec(close_gripper_text(receiving_arm), "close", receiving_arm),
+        StepSpec(open_gripper_text(release_arm), "open", release_arm),
+        StepSpec(
+            f"Return the {release_arm} arm to a neutral pose after releasing the {obj}.",
+            "final",
+            release_arm,
+        ),
+    ]
 
 
 @register("hanging_mug")
 def hanging_mug(ctx: TaskContext) -> list[StepSpec]:
     mug = ctx.object_a if ctx.object_a != "target object" else "mug"
-    return [
-        StepSpec(pick_text(mug, ctx.arm_a), "close", ctx.arm_a),
-        StepSpec(f"Place the {mug} down with the first arm, rotating it if necessary.", "open", ctx.arm_a),
-        StepSpec(f"Grasp the {mug} with the other arm.", "close", ctx.arm_b),
-        StepSpec(f"Hang the {mug} on the rack.", "open", ctx.arm_b),
-    ]
+    return (
+        grasp_steps(mug, ctx.arm_a)
+        + [
+            StepSpec(
+                f"Move the {ctx.arm_a} arm with the {mug} to the middle position."
+                if ctx.arm_a
+                else f"Move the {mug} to the middle position.",
+                "move",
+                ctx.arm_a,
+            ),
+            StepSpec(
+                f"Move the {ctx.arm_a} arm to place the {mug} down, rotating it if necessary."
+                if ctx.arm_a
+                else f"Move to place the {mug} down, rotating it if necessary.",
+                "move",
+                ctx.arm_a,
+            ),
+            StepSpec(open_gripper_text(ctx.arm_a), "open", ctx.arm_a),
+        ]
+        + grasp_steps(mug, ctx.arm_b)
+        + place_steps(mug, "on the rack", ctx.arm_b)
+        + [
+            StepSpec(
+                f"Return the {ctx.arm_b} arm to a neutral pose after releasing the {mug}."
+                if ctx.arm_b
+                else f"Return to a neutral pose after releasing the {mug}.",
+                "move",
+                ctx.arm_b,
+            ),
+        ]
+    )
 
 
 @register("scan_object")
@@ -463,12 +853,27 @@ def scan_object(ctx: TaskContext) -> list[StepSpec]:
     obj_arm, scanner_arm = prompt_scan_arms(ctx.task_goal, ctx.arm_a, ctx.arm_b)
     return [
         StepSpec(
-            f"Grasp the {ctx.object_a} with the {obj_arm} arm while grasping the {ctx.object_b} with the {scanner_arm} arm.",
+            f"Move the {obj_arm} arm to the grasp pose of the {ctx.object_a} while moving the {scanner_arm} arm to the grasp pose of the {ctx.object_b}.",
+            "move",
+        ),
+        StepSpec(
+            "Close the grippers of both arms.",
             "close",
         ),
         StepSpec(
-            f"Scan the {ctx.object_a} with the {ctx.object_b}, holding the {ctx.object_a} with the {obj_arm} arm and the {ctx.object_b} with the {scanner_arm} arm.",
-            "final",
+            f"Lift both arms to raise the {ctx.object_a} and the {ctx.object_b} to the scan position.",
+            "move",
+            terminates_on=("both_arms_settle",),
+        ),
+        StepSpec(
+            f"Lift the {ctx.object_a} to the scan position and angle with the {obj_arm} arm.",
+            "move",
+            obj_arm,
+        ),
+        StepSpec(
+            f"Move the {ctx.object_b} with the {scanner_arm} arm to scan the held {ctx.object_a}.",
+            "move",
+            scanner_arm,
         ),
     ]
 
@@ -477,45 +882,78 @@ def scan_object(ctx: TaskContext) -> list[StepSpec]:
 def pick_dual_objects(ctx: TaskContext) -> list[StepSpec]:
     first, second = distinct_pair(ctx.object_a, ctx.object_b)
     return [
-        StepSpec(f"Grasp the {first} with the left arm while grasping the {second} with the right arm.", "close"),
-        StepSpec(f"Lift and hold the {first} with the left arm while holding the {second} with the right arm.", "final"),
+        StepSpec(
+            f"Move the left arm to the grasp pose of the {first} while moving the right arm to the grasp pose of the {second}.",
+            "move",
+        ),
+        StepSpec("Close the grippers of both arms.", "close"),
+        StepSpec(
+            f"Lift the {first} and the {second} to the middle position with the corresponding arms.",
+            "move",
+        ),
     ]
 
 
 def object_action_builder(
     fallback: str,
     action: Callable[[str, TaskContext], str],
+    *,
+    final_event_kind: str = "final",
 ) -> TaskBuilder:
     def builder(ctx: TaskContext) -> list[StepSpec]:
         obj = ctx.object_a if ctx.object_a != "target object" else fallback
-        return [
-            StepSpec(pick_text(obj, ctx.arm_a), "close", ctx.arm_a),
-            StepSpec(action(obj, ctx), "final"),
-        ]
+        return grasp_steps(obj, ctx.arm_a) + [StepSpec(action(obj, ctx), final_event_kind, ctx.arm_a)]
     return builder
 
 
-TASK_BUILDERS["adjust_bottle"] = object_action_builder("bottle", lambda obj, ctx: f"Keep the {obj} upright.")
+TASK_BUILDERS["adjust_bottle"] = object_action_builder("bottle", lambda obj, ctx: f"Lift the {obj} upright.", final_event_kind="move")
 TASK_BUILDERS["beat_block_hammer"] = object_action_builder("hammer", lambda obj, ctx: f"Use the {obj} to hit the block.")
-TASK_BUILDERS["rotate_qrcode"] = object_action_builder(
-    "payment sign",
-    lambda obj, ctx: f"Rotate the {obj} until the QR code faces the robot.",
-)
-TASK_BUILDERS["shake_bottle"] = object_action_builder("bottle", lambda obj, ctx: f"Shake the {obj}.")
+
+
+@register("rotate_qrcode")
+def rotate_qrcode(ctx: TaskContext) -> list[StepSpec]:
+    obj = ctx.object_a if ctx.object_a != "target object" else "payment sign"
+    return grasp_steps(obj, ctx.arm_a) + [
+        StepSpec(f"Rotate the {obj} until the QR code faces the robot.", "move", ctx.arm_a),
+        StepSpec(open_gripper_text(ctx.arm_a), "open", ctx.arm_a),
+    ]
+
+
+TASK_BUILDERS["shake_bottle"] = object_action_builder("bottle", lambda obj, ctx: f"Shake the {obj}.", final_event_kind="move")
 TASK_BUILDERS["shake_bottle_horizontally"] = object_action_builder(
     "bottle",
     lambda obj, ctx: f"Shake the {obj} horizontally.",
+    final_event_kind="move",
 )
 
 
 @register("dump_bin_bigbin")
 def dump_bin_bigbin(ctx: TaskContext) -> list[StepSpec]:
     obj = ctx.object_a if ctx.object_a != "target object" else "trash bin"
+    gripper_events = [event for event in ctx.events if event.kind in {"close", "open"}]
+    close_events = [event for event in gripper_events if event.kind == "close"]
+    first_arm = (close_events[0].arm if close_events else None) or ctx.arm_a or "left"
+    second_arm = (
+        close_events[1].arm
+        if len(close_events) > 1
+        else ctx.arm_b or ("right" if first_arm == "left" else "left")
+    )
+    if ctx.events and len(close_events) < 2:
+        return grasp_steps(obj, first_arm) + [
+            StepSpec(f"Lift the {obj} and pour its contents into the big bin.", "final", first_arm)
+        ]
     return [
-        StepSpec(pick_text(obj), "close"),
-        StepSpec(f"Lift the {obj} above the big bin.", "midpoint"),
-        StepSpec(f"Pour the contents of the {obj} into the big bin.", "midpoint"),
-        StepSpec(f"Finish emptying the {obj} and hold it steady.", "final"),
+        StepSpec(move_to_grasp_text(obj, first_arm), "move", first_arm),
+        StepSpec(close_gripper_text(first_arm), "close", first_arm),
+        StepSpec(f"Move the {first_arm} arm with the {obj} to the middle position.", "move", first_arm),
+        StepSpec(open_gripper_text(first_arm), "open", first_arm),
+        StepSpec(
+            f"Move the {second_arm} arm to the middle position near the {obj} while returning the {first_arm} arm to the default pose.",
+            "move",
+            second_arm,
+        ),
+        StepSpec(close_gripper_text(second_arm), "close", second_arm),
+        StepSpec(f"Lift the {obj} with the {second_arm} arm and pour its contents into the big bin.", "move", second_arm),
     ]
 
 
@@ -523,8 +961,12 @@ def dump_bin_bigbin(ctx: TaskContext) -> list[StepSpec]:
 def grab_roller(ctx: TaskContext) -> list[StepSpec]:
     obj = ctx.object_a if ctx.object_a != "target object" else "roller"
     return [
-        StepSpec(f"Grasp the {obj}.", "close"),
-        StepSpec(f"Lift the {obj} off the table.", "final"),
+        StepSpec(
+            f"Move both arms to the grasp pose of the {obj}.",
+            "move",
+        ),
+        StepSpec("Close the grippers of both arms.", "close"),
+        StepSpec(f"Lift the {obj} off the table with both arms.", "move"),
     ]
 
 
@@ -533,12 +975,20 @@ def lift_pot(ctx: TaskContext) -> list[StepSpec]:
     obj = ctx.object_a if ctx.object_a != "target object" else "pot"
     return [
         StepSpec(
-            f"Grasp the {obj} with the left arm while grasping it with the right arm.",
-            "both_full_close",
+            "Partially close the grippers of both arms.",
+            "close",
         ),
         StepSpec(
-            f"Lift the {obj} off the table with the left arm while lifting it with the right arm.",
-            "final",
+            f"Move both arms to the grasp pose of the {obj}.",
+            "move",
+        ),
+        StepSpec(
+            "Close the grippers of both arms.",
+            "close",
+        ),
+        StepSpec(
+            f"Lift the {obj} with both arms.",
+            "move",
         ),
     ]
 
@@ -546,40 +996,111 @@ def lift_pot(ctx: TaskContext) -> list[StepSpec]:
 def open_builder(fallback: str, part: str) -> TaskBuilder:
     def builder(ctx: TaskContext) -> list[StepSpec]:
         obj = ctx.object_a if ctx.object_a != "target object" else fallback
-        return [
-            StepSpec(f"Grasp the {obj} {part}.", "close", ctx.arm_a),
+        return grasp_steps(f"{obj} {part}", ctx.arm_a) + [
             StepSpec(f"Open the {obj} {part}.", "final"),
         ]
     return builder
 
 
 TASK_BUILDERS["open_laptop"] = open_builder("laptop", "lid")
-TASK_BUILDERS["open_microwave"] = open_builder("microwave", "door")
+
+
+@register("open_microwave")
+def open_microwave(ctx: TaskContext) -> list[StepSpec]:
+    obj = ctx.object_a if ctx.object_a != "target object" else "microwave"
+    part = "door"
+    arm = ctx.arm_a
+    close_events = [
+        event for event in ctx.events
+        if event.kind == "close" and (arm is None or event.arm == arm)
+    ]
+    steps = grasp_steps(f"{obj} {part}", arm)
+    # RoboTwin open_microwave episodes often release the door handle and
+    # re-grasp it partway through (close -> open -> close). The default
+    # open_builder folds the whole pull into a single final span that only
+    # terminates at episode_end, burying the re-grasp gripper events. Split
+    # each extra close into its own pull / release / re-grasp subtasks so the
+    # gripper events become first-class segment boundaries.
+    for _ in close_events[1:]:
+        steps.extend([
+            StepSpec(
+                f"Pull the {obj} {part} open partway.",
+                "move",
+                arm,
+                terminates_on=("gripper_open",),
+            ),
+            StepSpec(open_gripper_text(arm), "open", arm),
+            StepSpec(
+                move_to_grasp_text(f"{obj} {part}", arm),
+                "move",
+                arm,
+                terminates_on=("gripper_close",),
+            ),
+            StepSpec(close_gripper_text(arm), "close", arm),
+        ])
+    final_text = (
+        f"Open the {obj} {part}."
+        if len(close_events) <= 1
+        else f"Continue opening the {obj} {part}."
+    )
+    steps.append(StepSpec(final_text, "final"))
+    return steps
 
 
 @register("stamp_seal")
 def stamp_seal(ctx: TaskContext) -> list[StepSpec]:
     seal = ctx.object_a if ctx.object_a != "target object" else "seal"
     target = ctx.object_b if ctx.object_b != "target object" and not is_color_name(ctx.object_b) else "target area"
-    return [
-        StepSpec(pick_text(seal, ctx.arm_a), "close", ctx.arm_a),
-        StepSpec(f"Press the {seal} onto the {target}.", "final"),
+    return grasp_steps(seal, ctx.arm_a) + [
+        StepSpec(f"Move the {ctx.arm_a} arm above the {target}." if ctx.arm_a else f"Move above the {target}.", "move", ctx.arm_a),
+        StepSpec(
+            f"Open the gripper of the {ctx.arm_a} arm to release the {seal} onto the {target}."
+            if ctx.arm_a
+            else f"Open the gripper to release the {seal} onto the {target}.",
+            "open",
+            ctx.arm_a,
+        ),
     ]
 
 
 def single_press_builder(text: str | Callable[[TaskContext], str]) -> TaskBuilder:
     def builder(ctx: TaskContext) -> list[StepSpec]:
         value = text(ctx) if callable(text) else text
-        return [StepSpec(value, "close", ctx.arm_a)]
+        return [
+            StepSpec(f"Move the {ctx.arm_a} arm to the operation pose." if ctx.arm_a else "Move to the operation pose.", "move", ctx.arm_a),
+            StepSpec(close_gripper_text(ctx.arm_a), "close", ctx.arm_a),
+            StepSpec(value, "press", ctx.arm_a),
+            StepSpec(f"Lift the {ctx.arm_a} arm after pressing." if ctx.arm_a else "Lift after pressing.", "move", ctx.arm_a),
+        ]
     return builder
 
 
 TASK_BUILDERS["click_alarmclock"] = single_press_builder("Click the alarm clock button.")
 TASK_BUILDERS["click_bell"] = single_press_builder("Press the top of the bell.")
-TASK_BUILDERS["press_stapler"] = single_press_builder("Press down the stapler.")
-TASK_BUILDERS["turn_switch"] = single_press_builder(
-    lambda ctx: f"Operate the {ctx.object_a if ctx.object_a != 'target object' else 'switch'}."
-)
+
+
+@register("press_stapler")
+def press_stapler(ctx: TaskContext) -> list[StepSpec]:
+    return [
+        StepSpec(
+            f"Move the {ctx.arm_a} arm to the stapler pressing pose."
+            if ctx.arm_a
+            else "Move to the stapler pressing pose.",
+            "move",
+            ctx.arm_a,
+        ),
+        StepSpec(close_gripper_text(ctx.arm_a), "close", ctx.arm_a),
+        StepSpec("Press down the stapler.", "press", ctx.arm_a),
+    ]
+
+
+@register("turn_switch")
+def turn_switch(ctx: TaskContext) -> list[StepSpec]:
+    switch = ctx.object_a if ctx.object_a != "target object" else "switch"
+    return [
+        StepSpec(close_gripper_text(ctx.arm_a), "close", ctx.arm_a),
+        StepSpec(f"Operate the {switch}.", "press", ctx.arm_a),
+    ]
 
 
 def build_steps(
@@ -607,6 +1128,8 @@ def canonical_task_goal(slug: str, task_goal: str) -> str:
         return "Arrange the blue block, green block, and red block from left to right."
     if slug == "blocks_ranking_size":
         return "Arrange the small block, medium block, and large block from left to right."
+    if slug == "place_bread_basket":
+        return clean_duplicate_articles(task_goal)
     return task_goal
 
 

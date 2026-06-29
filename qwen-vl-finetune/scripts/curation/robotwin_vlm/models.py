@@ -11,6 +11,8 @@ class GripperEvent:
     frame: int
     arm: str
     kind: str
+    start_frame: int | None = None
+    end_frame: int | None = None
 
 
 @dataclass(frozen=True)
@@ -18,6 +20,7 @@ class StepSpec:
     text: str
     event_kind: str = "final"
     arm: str | None = None
+    terminates_on: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

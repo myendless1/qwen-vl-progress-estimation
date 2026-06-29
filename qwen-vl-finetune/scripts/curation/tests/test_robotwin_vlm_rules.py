@@ -19,72 +19,79 @@ from robotwin_vlm.prompts import (  # noqa: E402
 from robotwin_vlm.task_rules import EXPECTED_TASK_SLUGS  # noqa: E402
 
 
-LEGACY_RULE_HASHES = {
-    "adjust_bottle": "58e66eef4e55b9f472f1165f7211c5dbbd231fde514f61978dc374ac02dd49e9",
-    "beat_block_hammer": "9f26106f5c75cd19ecd3dba45534d57f783e8965db82a373473dd94ff7c51c3d",
-    "blocks_ranking_rgb": "8b41a1d9de7bff95f8eb5218339aefb47caf81d402ea2c2bc45e1dc7fe1b26c2",
-    "blocks_ranking_size": "a38d52ee087b7a7628df183091b800a3f51a0f14442865eea72de0fa4ed288a4",
-    "click_alarmclock": "343f7d587392db43ce5f70e304c8fd9f1eeb447da03f7b6fc85121d56269300f",
-    "click_bell": "eb31ceabecc9b06a7dbb134035cbd08a7b501158ae9b7b2fa0674794ef786eba",
-    "dump_bin_bigbin": "15c2d01703e839cc2d0e3ddfe9dffe9f1980d0731c43cd655a507aa716a6a0d7",
-    "grab_roller": "6170edf3248fb4d20fb26e2dbfd960161ef845f413fce006c340255161502fc1",
-    "handover_block": "ef8e6722b4e64be971926506ff50418ac7d70494402c8b0f7cc61089d13cff0b",
-    "handover_mic": "cd00705d0cbc00e40e502c9e90e4b72e83428f2975ff39cd820886588f161840",
-    "hanging_mug": "eb08df613ea4b33efb96d07a0f89780db06a5beef2535dcdb659d164a212c8ad",
-    "lift_pot": "87b36bd24fe49ec483e41467f2e0e62d37b957a0555c874279412ff536739769",
-    "move_can_pot": "1ccc321c17cd7fc87d5113d0cb72568441d802b561e082da4bf6bac12cbdbbf8",
-    "move_pillbottle_pad": "5e29d1a4d646dca8e416093e61c1aca13c672e20b6300f1fe01153452d2dc425",
-    "move_playingcard_away": "83a46afa87bf47cdd52a4cb5e3b32e66847d0866bc976fa7d4b3a198de374e9b",
-    "move_stapler_pad": "75986804c67c147b034571d6da929a9fa504db42da466d569acf5952f312535c",
-    "open_laptop": "1fe918c42d75e9c41b25655c8b81fef73086c9f99444b8014dba8b6843af0238",
-    "open_microwave": "8b33498c8ed92f9472dc033aebf3745c3d1af978d58096d27a962f1ac805e671",
-    "pick_diverse_bottles": "f98520f4807fa41f79167f35c9660c4c23523e8f8ea99e8ca7c3559ec572d17b",
-    "pick_dual_bottles": "f98520f4807fa41f79167f35c9660c4c23523e8f8ea99e8ca7c3559ec572d17b",
-    "place_a2b_left": "63052712352f7ab13730a13a42cb25ecdb248ba523de6d0ddcc1c36a1513eb74",
-    "place_a2b_right": "9124c26ff1ef324975f001e05bae5f44d4a0f53ad057526709dae8ef11e4ad31",
-    "place_bread_basket": "061ab2b76f30c2b2fff6f005180b4a2c8d746ea0efe38c81b2392364faf81c78",
-    "place_bread_skillet": "2157feeb34f16829d1057f81fc9d6ccd18d878ed3566a70bee9345668f89e6c3",
-    "place_burger_fries": "0bba033c8ba1fa1318a6e7a11380453701990db2019e43c8c546cf7093e7462b",
-    "place_can_basket": "3d9c727b4547de79987a8a21baebb4a2bd66f709ae614e24cac547100ca1c414",
-    "place_cans_plasticbox": "9a3bf7263b3d0792a89b89c4361187bd8f9e63b027ef635c2ff780d33a27438b",
-    "place_container_plate": "f6cf832c510ecb4b3205edc4920ffe8910b78949f3474a3e788933c2b6c6b42a",
-    "place_dual_shoes": "4ba4331bfdb28df33a73e9fccedde8c8bc2a9a050a8fbc48572123f427ec3a57",
-    "place_empty_cup": "d470d377c91dd62b5b44b5a9223dd71e5580c4657554405c1dbee4c527f5cd6a",
-    "place_fan": "95aa8d90db46332a0bef5d0ee90b221ef710125a6c7aac198aeeda942065e434",
-    "place_mouse_pad": "780c2ce142a69bf5853dbf86687a609327e3e36dbe7f9dcdac5773b527eff903",
-    "place_object_basket": "c17e61ec14f757caff1ff29f69e2e66d5ed42dadbe731b5ef0e786eea5c460e0",
-    "place_object_scale": "f3d9cc5c4137d52e6b66c0b0c93e58618db8ad51a6fd84cb6e14728f2e3b9f8f",
-    "place_object_stand": "9f16cebe4d0f62da1678a5c12ee4e93137463f3ff1e63adeacf619a835a0d2ed",
-    "place_phone_stand": "8d10ba60f915d58d42d11da1e626b60e50c9943ddd829a50d55be2e2ff8478f0",
-    "place_shoe": "75986804c67c147b034571d6da929a9fa504db42da466d569acf5952f312535c",
-    "press_stapler": "195d40c6ee9d604d1baeb64a221f59a9d95013c0805983a3a00e1441d0c2322b",
-    "put_bottles_dustbin": "6711afe25060bfc8832e8c30e9029000ab003997d3b171292f3b8c4bacc6d637",
-    "put_object_cabinet": "a90c469a2a8385663b1b04daacf1a0d7079be4fb0fc3b5c0caf74e0bc6cfd824",
-    "rotate_qrcode": "382a00eba5afe630a061234616d055a12cc4632c8c07136334948babe172357b",
-    "scan_object": "2ce9df0a914be9f68fca797c7e19d551a5d635288a956b6ba463383b4412c2a2",
-    "shake_bottle": "e3137bcddd726b5a1cc075b08dca4c44394d8ade0e5216e30ace3e13193d91c8",
-    "shake_bottle_horizontally": "509260597b832d1f88bf8d8ae89d19d8381ce43d73c81f14c48fd9d7d8627b57",
-    "stack_blocks_three": "713bcd054594deb665b5221425a73036e82515b96c1b282e3a74e8f478381012",
-    "stack_blocks_two": "d8bd9f2c2923099269cce1589618ab6f36007569cdf30dec955ef3bf3205a29d",
-    "stack_bowls_three": "22d88a0e6b5f8a5a9b77bbe267e539287d652151464a54ca10d107bbc3ab6c4a",
-    "stack_bowls_two": "946f6f14082df82021517d4f8b17fbd29e4044654f6eb301b0e3722cccbde8db",
-    "stamp_seal": "ec980564da38b8fb59dfa077e4c1b44edb4e34c3cf0ea9d3916a76c0b98b14aa",
-    "turn_switch": "bf93c47276e0fbd46b58b4d28c5cf309fdbc5286f9421a25caf3fdb0d1336f71",
+ATOMIC_RULE_HASHES = {
+    "adjust_bottle": "b1a8f28829c5baf2b9e8789cb2c351933af617ed3190cbf6d6690791fc8ec1c1",
+    "beat_block_hammer": "631240b6c063d9c39dd46c85896ba1a2c0fb36ef816d2db3cbd4df404d8cfe1e",
+    "blocks_ranking_rgb": "003824448b0415a5b496391b86cb1c84c04446b5b68db6bcdaad9ace3703c953",
+    "blocks_ranking_size": "25fe40ac3b27b83a0eade060b8d20b77b7ad7e75708826904c2ccced6ef72cdc",
+    "click_alarmclock": "2dca41ab3e28a96b4efbabe307b469fdf98f5677d93959c5615a1d6dac082f31",
+    "click_bell": "7ae7a966b29dc9549525bffd2c929da3aae059e15f9af5ac2ce9bfe32e4cc193",
+    "dump_bin_bigbin": "e9e0956123d5c0d0868063fd1a22c8d3cfed7c46425c989fc1eb67e89c0d2698",
+    "grab_roller": "163071489fe6f28b95c0aac92502edc2fcd62bb30b8eec9e79643e91f6d9e41a",
+    "handover_block": "21d8ad84f89401c359760284f5131e76dda4ad2ca4008e2df67afad09e7bd0de",
+    "handover_mic": "f22e1b0c1def6835291207dc9ef294cf24d9bf5e0ae5c61a58bc87e42942cd04",
+    "hanging_mug": "77860c83807dd50222985e259d29d26e2586c6d93eaa13435316949948a0a978",
+    "lift_pot": "f8e09b141414e2b9040d1672fe322840997ec6ee92e6f3e7a0307ecc76901349",
+    "move_can_pot": "62b1e7b251d9d9658a4100dfc8cfbf4da158d94438d04a78701f6d851a6d07d8",
+    "move_pillbottle_pad": "bd443522c31e9a8d8874aad46a5f5d55d5be196da0734f1f99d35071100499a1",
+    "move_playingcard_away": "2998c7c76aa614ff72c59bd5ec8791265e69cbef09e8d841e9b49a1896ea03e1",
+    "move_stapler_pad": "1035608b2d1c56736eb4f61db70f7a9ab6b55ac1644da92bec9015010bedeca0",
+    "open_laptop": "8d29243718da5095c6ebca325344931d166d2e770b88fe3b2ef0041c2362d3b0",
+    "open_microwave": "410cdf6d7c222c1119f30f02952a0054940c3341e08a447d49f0c4534e510230",
+    "pick_diverse_bottles": "f8426f4398fbf7ec05427fd68ca78669881842375993121c762e643cc16e84ac",
+    "pick_dual_bottles": "f8426f4398fbf7ec05427fd68ca78669881842375993121c762e643cc16e84ac",
+    "place_a2b_left": "3aec839bc148d2b97b597e8d4e26143198a61ee21e5ba5603c56a24c99dc8bab",
+    "place_a2b_right": "e4f76bed0b7582dddff388cb649280e8af740ffb4539ac5440598f1fbbfcb1e0",
+    "place_bread_basket": "6045baf909fc0e2097ad7e9b7827f74b2271e616630b351cdd3e3e5bb5601ad5",
+    "place_bread_skillet": "588d0fc88964fa3ef8db5862e0400b434782f04e9ffc89647951947dba3a8a31",
+    "place_burger_fries": "17a77168aa649443463c8ca28081800ac8bf3ac7f28eecbbfd00ab56a78daadd",
+    "place_can_basket": "6859edbf0c0214d9671b8c14dcc168fe3705cad57ca919b0505c19b279d8cb49",
+    "place_cans_plasticbox": "91b90aba1708c1bc19198436895d662cc0b6fadfb7705e7c2053815e58eac562",
+    "place_container_plate": "bb740149952ce49704780a987a01b85c6a458db4ffd2dc1c465300648ff8d85d",
+    "place_dual_shoes": "b71c6c1bf9a03bbe83b3f8ed69818bcef438c84f7520fe1b4e214aa6cf70cd02",
+    "place_empty_cup": "f654ad9d7a7a19da9e66cae33250fee9729aa2ac7fb369e7aedf5e447806b937",
+    "place_fan": "423482459143d2c836eda1fc40571897da5ad45e3874881683745c3c56acbea1",
+    "place_mouse_pad": "b55b1d7e2c76e4a14644bf996315a8224a0b02e1bfee771a76da4abf278cc536",
+    "place_object_basket": "4a620949477b85003106fccdc1fdc2b618fb5465abf088809650ef3a75b7c6b8",
+    "place_object_scale": "90f31a5e2577c817070db755dea5f3f721873d6f542760243d8fe0a35c2ba33c",
+    "place_object_stand": "0fdfb13e0036254c44bd9fa61f6b6b24a32d79991bae7a7f40171ea6e8350383",
+    "place_phone_stand": "f9d1101ab6c64e70235daef933ce79f93baeb8f6e3d999868fd042b4532e1cd2",
+    "place_shoe": "1035608b2d1c56736eb4f61db70f7a9ab6b55ac1644da92bec9015010bedeca0",
+    "press_stapler": "b9655d6c9fd0fb4e44430bbcdeb5eae5c47a546d1e0bbe2eaf2d02a62240d39f",
+    "put_bottles_dustbin": "790cba299a36138772b6845b6a24d2837972ac300c93750725c08741b50873c3",
+    "put_object_cabinet": "f9ccf7a9f4311403d72d0d347527eb0611e218836a21a0ebce803dfe02ee917e",
+    "rotate_qrcode": "2ca4ec8959002748030625032cb1db79feba56850f51b2a6c7428a36804ac816",
+    "scan_object": "5a3e3a6c56831290c66a5802a3ac203e6a8c51e09821da1bd81ec72d29a0eb28",
+    "shake_bottle": "e1a7aec875d105a8c5a0e70df04bd2244072b52a1b22f0465c4eb37e0ad93b31",
+    "shake_bottle_horizontally": "0d66c9369c565c39078c5debc54f8ce8c7f5ae4e6b636b8428ca4b9310f48b63",
+    "stack_blocks_three": "0bf61dc5e79cbfd3aca0a39419b9618cf3a921b769faea70409cb9d7edd29ce2",
+    "stack_blocks_two": "6faeb3d2ad4b0f4f429bbc3f90fe7f9a17a008a3232d1515b2d73d520cfc409d",
+    "stack_bowls_three": "4f73bb27015e40d4c518b6edef72bb27cd041997222abe82d498f4e729307378",
+    "stack_bowls_two": "3d60f01de33eae48631c9c00c9a7bdb7e0f0b7ff64eea1f4c9de54cb6b536353",
+    "stamp_seal": "11ce5c44d61f46b81fb741787d8c4f74a70a6f10dd2b86399ecaeaa5feaaf701",
+    "turn_switch": "7244442b1d20006a0411da09e9fe81c4c4839bcade863263b6911235734443c8",
 }
 
 EVENT_RULE_HASHES = {
-    "place_can_basket": "8fbc2f513361838d7f7d65e7c3202fc31ad03f02beb71d149a4a0be906c88370",
-    "place_object_basket": "8fbc2f513361838d7f7d65e7c3202fc31ad03f02beb71d149a4a0be906c88370",
-    "put_bottles_dustbin": "3b9b0931b153dfe15aef65111c42305904dd3590803bacdf228d5a51df63940e",
-    "put_object_cabinet": "f856dac81a14cf50f6a7dbf8110cd7a7601c6f90aeff0167782911d53fb50463",
-    "scan_object": "0c2e82c3b80c8761e4515abf45dc07b2831fdf70ec62e51760278319c0f75fd7",
-    "place_bread_skillet": "efde1ef03c6305986c0dfbb95d461c282469e56363d8ed10445f36c3ea1c35b5",
+    "place_bread_skillet": "39e806e7e5fb96f534607069a408e058a23ee362680e766b2f9261a62cfe0030",
+    "place_can_basket": "5dbe1737776b2408c92f2c730ec7e9eb2632d12b5e4f78828afbd2b23323b759",
+    "place_object_basket": "5dbe1737776b2408c92f2c730ec7e9eb2632d12b5e4f78828afbd2b23323b759",
+    "put_bottles_dustbin": "71f0e2cafe15937525bbf77f1b791826c245b061b33f1cec08f34c5b581bff1c",
+    "put_object_cabinet": "72dcd5c57880e6f6acfa34ea9609921c33548d67cbbf6244bbcae45df4902c86",
+    "scan_object": "74dbb72c820d0b1548e915b57290b82284cda1229d2659570d4222a1877a3f07",
 }
+
+ATOMIC_EVENT_KINDS = {"move", "open", "close", "press", "final"}
 
 
 def rule_hash(steps: list[object]) -> str:
     payload = [
-        {"text": step.text, "event_kind": step.event_kind, "arm": step.arm}
+        {
+            "text": step.text,
+            "event_kind": step.event_kind,
+            "arm": step.arm,
+            "terminates_on": list(step.terminates_on),
+        }
         for step in steps
     ]
     encoded = json.dumps(
@@ -100,14 +107,14 @@ class TaskRuleTests(unittest.TestCase):
     def test_all_50_tasks_are_registered_once(self) -> None:
         self.assertEqual(len(TASK_BUILDERS), 50)
         self.assertEqual(set(TASK_BUILDERS), EXPECTED_TASK_SLUGS)
-        self.assertEqual(set(LEGACY_RULE_HASHES), EXPECTED_TASK_SLUGS)
+        self.assertEqual(set(ATOMIC_RULE_HASHES), EXPECTED_TASK_SLUGS)
 
-    def test_all_default_rules_match_legacy_contract(self) -> None:
-        for slug, expected in LEGACY_RULE_HASHES.items():
+    def test_all_default_rules_match_atomic_contract(self) -> None:
+        for slug, expected in ATOMIC_RULE_HASHES.items():
             with self.subTest(slug=slug):
                 self.assertEqual(rule_hash(build_steps(slug, "", {})), expected)
 
-    def test_event_driven_rules_match_legacy_contract(self) -> None:
+    def test_event_driven_rules_match_atomic_contract(self) -> None:
         events = [
             GripperEvent(10, "left", "close"),
             GripperEvent(20, "right", "close"),
@@ -119,6 +126,116 @@ class TaskRuleTests(unittest.TestCase):
         for slug, expected in EVENT_RULE_HASHES.items():
             with self.subTest(slug=slug):
                 self.assertEqual(rule_hash(build_steps(slug, prompt, info, events)), expected)
+
+    def test_task_rules_only_use_atomic_event_kinds(self) -> None:
+        for slug in EXPECTED_TASK_SLUGS:
+            with self.subTest(slug=slug):
+                for step in build_steps(slug, "", {}):
+                    self.assertIn(step.event_kind, ATOMIC_EVENT_KINDS)
+
+    def test_task_rules_do_not_use_ambiguous_arm_references(self) -> None:
+        ambiguous = ("first arm", "receiving arm", "other arm")
+        for slug in EXPECTED_TASK_SLUGS:
+            with self.subTest(slug=slug):
+                text = "\n".join(step.text.lower() for step in build_steps(slug, "", {}))
+                for phrase in ambiguous:
+                    self.assertNotIn(phrase, text)
+
+    def test_place_bread_basket_sequential_breads_follow_prompt_names(self) -> None:
+        events = [
+            GripperEvent(53, "right", "close"),
+            GripperEvent(127, "right", "open"),
+            GripperEvent(201, "right", "close"),
+            GripperEvent(274, "right", "open"),
+        ]
+        steps = build_steps(
+            "place_bread_basket",
+            "Shift the golden bread and the light brown bread with ridges into the woven plastic breadbasket",
+            {},
+            events,
+        )
+        self.assertEqual(len(steps), 8)
+        self.assertEqual(steps[1].event_kind, "close")
+        self.assertEqual(steps[5].event_kind, "close")
+        text = "\n".join(step.text for step in steps)
+        self.assertIn("golden bread", text)
+        self.assertIn("light brown bread with ridges", text)
+        self.assertIn("woven plastic breadbasket", text)
+        self.assertNotIn("right bread", text)
+        self.assertNotIn("left bread", text)
+
+    def test_place_bread_basket_single_bread_and_dual_arm_shapes(self) -> None:
+        single_steps = build_steps(
+            "place_bread_basket",
+            "Put the cuboid bread into the white oval breadbasket after grabbing it.",
+            {},
+            [GripperEvent(56, "left", "close"), GripperEvent(130, "left", "open")],
+        )
+        self.assertEqual(len(single_steps), 4)
+        self.assertIn("cuboid bread", "\n".join(step.text for step in single_steps))
+
+        dual_steps = build_steps(
+            "place_bread_basket",
+            "Place the fluffy baked bread and the rounded square loaf in the white oval breadbasket using the dual arm",
+            {},
+            [
+                GripperEvent(58, "left", "close"),
+                GripperEvent(58, "right", "close"),
+                GripperEvent(131, "left", "open"),
+                GripperEvent(218, "right", "open"),
+            ],
+        )
+        self.assertEqual(len(dual_steps), 9)
+        text = "\n".join(step.text for step in dual_steps)
+        self.assertIn("fluffy baked bread", text)
+        self.assertIn("rounded square loaf", text)
+        self.assertIn("both arms", text)
+        self.assertNotIn("both objects", text)
+        second_place = dual_steps[6]
+        self.assertIn("while returning the", second_place.text)
+        self.assertIn("neutral pose", second_place.text)
+        self.assertEqual(second_place.terminates_on, ("gripper_open",))
+
+    def test_place_bread_skillet_splits_skillet_and_bread_motion(self) -> None:
+        steps = build_steps(
+            "place_bread_skillet",
+            "Take the soft brown bread and place it inside the metal skillet with comfortable grip",
+            {},
+            [
+                GripperEvent(62, "left", "close"),
+                GripperEvent(62, "right", "close"),
+                GripperEvent(152, "left", "open"),
+            ],
+        )
+        self.assertEqual(len(steps), 7)
+        self.assertEqual(steps[3].event_kind, "move")
+        self.assertEqual(steps[3].arm, "right")
+        self.assertIn("right arm to bring the skillet", steps[3].text)
+        self.assertNotIn("while", steps[3].text)
+        self.assertEqual(steps[4].event_kind, "move")
+        self.assertEqual(steps[4].arm, "left")
+        self.assertIn("left arm above the skillet", steps[4].text)
+        self.assertNotIn("while", steps[4].text)
+
+    def test_put_object_cabinet_splits_door_pull_and_object_place(self) -> None:
+        steps = build_steps(
+            "put_object_cabinet",
+            "Place the phone inside the cabinet.",
+            {},
+            [
+                GripperEvent(54, "left", "close"),
+                GripperEvent(127, "right", "close"),
+                GripperEvent(253, "left", "open"),
+            ],
+        )
+        self.assertEqual(len(steps), 7)
+        self.assertEqual(steps[4].text, "Pull open the cabinet with the right arm.")
+        self.assertEqual(steps[4].event_kind, "move")
+        self.assertEqual(steps[4].arm, "right")
+        self.assertEqual(steps[5].text, "Move the left arm to the place pose of the phone inside the cabinet.")
+        self.assertEqual(steps[5].event_kind, "move")
+        self.assertEqual(steps[5].arm, "left")
+        self.assertNotIn("while moving", "\n".join(step.text for step in steps))
 
     def test_unknown_task_keeps_single_final_prompt(self) -> None:
         steps = build_steps("future_task", "Do the future task.", {})

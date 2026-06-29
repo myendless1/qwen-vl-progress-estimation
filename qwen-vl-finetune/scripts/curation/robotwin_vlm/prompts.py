@@ -252,6 +252,43 @@ def prompt_mouse_object(task_goal: str, fallback: str) -> str:
     return fallback
 
 
+def _clause_arm_for_object(task_goal: str, object_regex: str, grab_verbs: str) -> str | None:
+    """Find the arm that grabs/picks/holds ``object_regex`` by scanning clauses.
+
+    Clauses are delimited by commas or periods so that an arm mentioned in one
+    clause is never wrongly attributed to an object mentioned in another clause
+    (e.g. "the left arm picks the tea box, the right arm grabs the scanner" must
+    not bind "left arm" to "scanner"). Within a clause we first look for the
+    object followed by its own arm ("... object ... with/using/in the X arm"),
+    which correctly handles "and"-conjoined clauses such as "Hold the scanner
+    with the right arm and the tea box with the left arm"; otherwise we look for
+    an arm that grabs/picks the object ("X arm ... grab ... object").
+    """
+    obj_re = object_regex
+    for clause in re.split(r"[,.]", task_goal):
+        if not re.search(obj_re, clause, flags=re.IGNORECASE):
+            continue
+        if not re.search(r"\b(left|right)\s+arm\b", clause, flags=re.IGNORECASE):
+            continue
+        # Object then its arm.
+        m = re.search(
+            obj_re + r"[^.,]*?\b(?:with|using|in)\s+the\s+(left|right)\s+arm\b",
+            clause,
+            flags=re.IGNORECASE,
+        )
+        if m:
+            return m.group(1).lower()
+        # Arm then a grab verb then the object.
+        m = re.search(
+            r"\b(left|right)\s+arm\b[^.,]*?" + grab_verbs + r"[^.,]*?" + obj_re,
+            clause,
+            flags=re.IGNORECASE,
+        )
+        if m:
+            return m.group(1).lower()
+    return None
+
+
 def prompt_scan_arms(
     task_goal: str,
     fallback_obj_arm: str | None,
@@ -259,24 +296,22 @@ def prompt_scan_arms(
 ) -> tuple[str, str]:
     scanner_arm = None
     obj_arm = None
-    scanner_match = re.search(r"\b(left|right)\s+arm\b[^.]*?\bscanner\b", task_goal, flags=re.IGNORECASE)
-    if scanner_match:
-        scanner_arm = scanner_match.group(1).lower()
-    else:
-        scanner_match = re.search(
-            r"\bscanner\b[^.]*?\b(?:with|using)\s+the\s+(left|right)\s+arm\b",
-            task_goal,
-            flags=re.IGNORECASE,
-        )
-        if scanner_match:
-            scanner_arm = scanner_match.group(1).lower()
-    obj_match = re.search(
-        r"\b(?:grab|grasp|pick|hold)\b[^.]*?\b(?:tea[\s-]?box|object)\b[^.]*?\b(?:with|using)\s+the\s+(left|right)\s+arm\b",
-        task_goal,
-        flags=re.IGNORECASE,
-    )
-    if obj_match:
-        obj_arm = obj_match.group(1).lower()
+    grab_verbs = r"\b(?:grab|grabs|grabbing|grasp|grasps|hold|holds|holding|pick|picks|picking|take|takes|taking|use|uses|using)\b"
+    # Clause-level: arm that grabs/holds/picks the scanner.
+    scanner_arm = _clause_arm_for_object(task_goal, r"\bscanner\b", grab_verbs)
+    if scanner_arm is None:
+        # "scanner ... with/using the X arm" within a single clause.
+        for clause in re.split(r"[,.]", task_goal):
+            m = re.search(
+                r"\bscanner\b[^.,]*?\b(?:with|using)\s+the\s+(left|right)\s+arm\b",
+                clause,
+                flags=re.IGNORECASE,
+            )
+            if m:
+                scanner_arm = m.group(1).lower()
+                break
+    # Clause-level: arm that grabs/picks the tea box / object.
+    obj_arm = _clause_arm_for_object(task_goal, r"\b(?:tea[\s-]?box|object)\b", grab_verbs)
     scanner_arm = scanner_arm or fallback_scanner_arm or "right"
     obj_arm = obj_arm or fallback_obj_arm or ("left" if scanner_arm == "right" else "right")
     if obj_arm == scanner_arm:
