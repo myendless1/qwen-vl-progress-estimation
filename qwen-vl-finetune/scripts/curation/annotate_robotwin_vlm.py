@@ -17,19 +17,17 @@ from typing import Any
 import numpy as np
 
 from robotwin_vlm.alignment import (
-    GRASP_CLOSE_THRESHOLD,
-    RELEASE_OPEN_THRESHOLD,
     assign_spans,
     detect_gripper_events,
-    insert_retreat_subtasks,
     merge_stack_arm_switches,
+    merge_tiny_post_gripper_motion,
     publish_actual_arm_labels,
+    relabel_dual_container_first_place,
 )
 from robotwin_vlm.models import GripperEvent, StepSpec, TaskContext
 from robotwin_vlm.task_rules import (
     CHRONOLOGICAL_ARM_TASKS,
     EXPECTED_TASK_SLUGS,
-    NO_RETREAT_TASKS,
     TASK_BUILDERS,
     build_steps,
     canonical_task_goal,
@@ -93,19 +91,34 @@ def load_states(parquet_path: Path) -> np.ndarray:
 
 
 def raw_scene_info(
+    repo: Path,
     raw_root: Path,
     slug: str,
     task_dir: str,
     episode_index: int,
 ) -> dict[str, str]:
     path = raw_root / slug / task_dir / "scene_info.json"
-    key = f"episode_{episode_index}"
     if not path.exists():
         return {}
     try:
         scene = read_json(path)
     except Exception:
         return {}
+    key = f"episode_{episode_index}"
+    source_meta_path = repo / "source_meta" / f"episode_{episode_index:06d}.json"
+    if source_meta_path.exists():
+        try:
+            source_meta = read_json(source_meta_path)
+            episode_path = str(
+                source_meta.get("source_meta", {})
+                .get("raw_record_payload", {})
+                .get("episode_path", "")
+            )
+            match = re.search(r"episode(\d+)\.hdf5$", episode_path)
+            if match:
+                key = f"episode_{int(match.group(1))}"
+        except Exception:
+            pass
     info = scene.get(key, {}).get("info", {})
     if isinstance(info, dict):
         return {str(k): str(v) for k, v in info.items()}
@@ -118,9 +131,6 @@ def annotate_episode(
     info_json: dict[str, Any],
     raw_root: Path,
     gripper_threshold: float,
-    grasp_close_threshold: float = GRASP_CLOSE_THRESHOLD,
-    release_open_threshold: float = RELEASE_OPEN_THRESHOLD,
-    insert_retreat: bool = True,
 ) -> dict[str, Any]:
     episode_index = int(episode["episode_index"])
     slug = task_slug_from_repo(repo)
@@ -130,21 +140,18 @@ def annotate_episode(
     task_goal = canonical_task_goal(slug, task_goal)
     states = load_states(episode_parquet_path(repo, episode_index, info_json))
     events = detect_gripper_events(states, threshold=gripper_threshold)
-    scene_info = raw_scene_info(raw_root, slug, task_dir_from_repo(repo), episode_index)
+    scene_info = raw_scene_info(repo, raw_root, slug, task_dir_from_repo(repo), episode_index)
     steps = build_steps(slug, task_goal, scene_info, events)
     subtasks = assign_spans(
         steps,
         events,
         int(states.shape[0]),
         states=states,
-        grasp_close_threshold=grasp_close_threshold,
-        release_open_threshold=release_open_threshold,
         prefer_specified_arm=slug not in CHRONOLOGICAL_ARM_TASKS,
     )
     subtasks = merge_stack_arm_switches(subtasks, slug)
-    effective_insert_retreat = insert_retreat and slug not in NO_RETREAT_TASKS
-    if effective_insert_retreat:
-        subtasks = insert_retreat_subtasks(subtasks, states)
+    subtasks = merge_tiny_post_gripper_motion(subtasks, states)
+    subtasks = relabel_dual_container_first_place(subtasks, states, slug)
     anno = {
         "episode_index": episode_index,
         "repo": repo.name,
@@ -153,13 +160,17 @@ def annotate_episode(
         "num_frames": int(states.shape[0]),
         "subtasks": subtasks,
         "metadata": {
-            "annotation_version": "robotwin_vlm_subtask_v2",
+            "annotation_version": "robotwin_vlm_atomic_delayed_v3",
             "gripper_threshold": gripper_threshold,
-            "grasp_close_threshold": grasp_close_threshold,
-            "release_open_threshold": release_open_threshold,
-            "retreat_subtasks_enabled": effective_insert_retreat,
+            "alignment_policy": "atomic actions with simultaneous delayed termination candidates",
             "detected_gripper_events": [
-                {"frame": event.frame, "arm": event.arm, "kind": event.kind}
+                {
+                    "frame": event.frame,
+                    "arm": event.arm,
+                    "kind": event.kind,
+                    "start_frame": event.start_frame,
+                    "end_frame": event.end_frame,
+                }
                 for event in events
             ],
             "scene_info": scene_info,
@@ -190,61 +201,6 @@ def print_rules(root: Path) -> None:
         print(f"{slug}: {len(build_steps(slug, '', {}))} subtasks")
 
 
-def report_retreat_candidates(
-    root: Path,
-    raw_root: Path,
-    only: str | None,
-    limit: int | None,
-    gripper_threshold: float,
-    grasp_close_threshold: float,
-    release_open_threshold: float,
-) -> None:
-    summary: dict[str, dict[str, Any]] = {}
-    for repo in iter_repos(root, only):
-        info_json = read_json(repo / "meta" / "info.json")
-        episodes = read_jsonl(repo / "meta" / "episodes.jsonl")
-        if limit is not None:
-            episodes = episodes[:limit]
-        slug = task_slug_from_repo(repo)
-        entry = summary.setdefault(
-            slug,
-            {"repos": set(), "episodes": 0, "episodes_with_retreat": 0, "retreat_subtasks": 0},
-        )
-        entry["repos"].add(repo.name)
-        for episode in episodes:
-            try:
-                anno = annotate_episode(
-                    repo=repo,
-                    episode=episode,
-                    info_json=info_json,
-                    raw_root=raw_root,
-                    gripper_threshold=gripper_threshold,
-                    grasp_close_threshold=grasp_close_threshold,
-                    release_open_threshold=release_open_threshold,
-                    insert_retreat=True,
-                )
-            except Exception as exc:
-                print(f"[ERROR] {repo.name} episode_{int(episode['episode_index']):06d}: {exc}")
-                continue
-            retreat_count = sum(
-                1
-                for subtask in anno["subtasks"]
-                if str(subtask.get("boundary_source", "")).startswith("eef_")
-            )
-            entry["episodes"] += 1
-            entry["retreat_subtasks"] += retreat_count
-            if retreat_count:
-                entry["episodes_with_retreat"] += 1
-    for slug, entry in sorted(summary.items()):
-        if entry["retreat_subtasks"] == 0:
-            continue
-        print(
-            f"{slug}: repos={len(entry['repos'])}, "
-            f"episodes_with_retreat={entry['episodes_with_retreat']}/{entry['episodes']}, "
-            f"retreat_subtasks={entry['retreat_subtasks']}"
-        )
-
-
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, default=DEFAULT_ROOT)
@@ -254,45 +210,11 @@ def main() -> None:
     parser.add_argument("--dry-run", action="store_true", help="Print examples without writing anno files.")
     parser.add_argument("--overwrite", action="store_true", help="Overwrite existing annotation files.")
     parser.add_argument("--gripper-threshold", type=float, default=0.5)
-    parser.add_argument(
-        "--grasp-close-threshold",
-        type=float,
-        default=GRASP_CLOSE_THRESHOLD,
-        help="Stricter gripper value used to end Grasp subtasks after the initial close event.",
-    )
-    parser.add_argument(
-        "--release-open-threshold",
-        type=float,
-        default=RELEASE_OPEN_THRESHOLD,
-        help="Stricter gripper value used to end Place/Release subtasks after the initial open event.",
-    )
-    parser.add_argument(
-        "--no-retreat-subtasks",
-        action="store_true",
-        help="Do not insert EEF-velocity-based arm return/retreat subtasks after release.",
-    )
     parser.add_argument("--print-rules", action="store_true", help="Print task slug to subtask-count mapping and exit.")
-    parser.add_argument(
-        "--report-retreat-candidates",
-        action="store_true",
-        help="Report task slugs where EEF velocity creates return/retreat subtasks.",
-    )
     args = parser.parse_args()
     if args.print_rules:
         print_rules(args.root)
         return
-    if args.report_retreat_candidates:
-        report_retreat_candidates(
-            root=args.root,
-            raw_root=args.raw_root,
-            only=args.only,
-            limit=args.limit,
-            gripper_threshold=args.gripper_threshold,
-            grasp_close_threshold=args.grasp_close_threshold,
-            release_open_threshold=args.release_open_threshold,
-        )
-        return
-
     total = 0
     skipped = 0
     for repo in iter_repos(args.root, args.only):
@@ -313,9 +235,6 @@ def main() -> None:
                     info_json=info_json,
                     raw_root=args.raw_root,
                     gripper_threshold=args.gripper_threshold,
-                    grasp_close_threshold=args.grasp_close_threshold,
-                    release_open_threshold=args.release_open_threshold,
-                    insert_retreat=not args.no_retreat_subtasks,
                 )
             except Exception as exc:
                 print(f"[ERROR] {repo.name} episode_{episode_index:06d}: {exc}")
