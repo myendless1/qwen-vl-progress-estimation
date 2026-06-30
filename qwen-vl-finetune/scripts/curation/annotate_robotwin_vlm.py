@@ -36,7 +36,7 @@ from robotwin_vlm.task_rules import (
 
 
 DEFAULT_ROOT = Path("/media/damoxing/datasets/vae4d/lerobot-vae4d-org/robotwin_gt_depth")
-DEFAULT_RAW_ROOT = Path("/media/damoxing/datasets/RoboTwin2_0/dataset")
+DEFAULT_RAW_ROOT = Path("/media/damoxing/datasets/robotwin-depth-f1")
 
 
 def read_jsonl(path: Path) -> list[dict[str, Any]]:
@@ -69,6 +69,14 @@ def task_dir_from_repo(repo: Path) -> str:
     if match:
         return match.group(0)
     return repo.name.split("-", 1)[-1]
+
+
+def raw_config_dir_from_repo(repo: Path) -> str:
+    if repo.name.endswith("-aloha-agilex_randomized_500"):
+        return "demo_randomized"
+    if repo.name.endswith("-aloha-agilex_clean_50"):
+        return "demo_clean"
+    return task_dir_from_repo(repo)
 
 
 def episode_parquet_path(repo: Path, episode_index: int, info: dict[str, Any]) -> Path:
@@ -140,7 +148,7 @@ def annotate_episode(
     task_goal = canonical_task_goal(slug, task_goal)
     states = load_states(episode_parquet_path(repo, episode_index, info_json))
     events = detect_gripper_events(states, threshold=gripper_threshold)
-    scene_info = raw_scene_info(repo, raw_root, slug, task_dir_from_repo(repo), episode_index)
+    scene_info = raw_scene_info(repo, raw_root, slug, raw_config_dir_from_repo(repo), episode_index)
     steps = build_steps(slug, task_goal, scene_info, events)
     subtasks = assign_spans(
         steps,

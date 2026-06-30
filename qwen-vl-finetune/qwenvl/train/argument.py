@@ -15,7 +15,19 @@ class DataArguments:
     dataset_use: str = field(default="")
     robotwin_data_root: Optional[str] = field(
         default=None,
-        metadata={"help": "Root path of the RobotWin LeRobot dataset."},
+        metadata={"help": "Root path of the RobotWin image dataset."},
+    )
+    robotwin_anno_root: Optional[str] = field(
+        default=None,
+        metadata={
+            "help": "Optional root for RobotWin anno/meta/data parquet. Defaults to robotwin_data_root."
+        },
+    )
+    robotwin_views: str = field(
+        default="main,left_wrist,right_wrist",
+        metadata={
+            "help": "Comma-separated RobotWin camera views to feed the model, e.g. 'main' or 'main,left_wrist,right_wrist'."
+        },
     )
     robotwin_test_ratio: float = field(
         default=0.05,
@@ -36,6 +48,12 @@ class DataArguments:
     robotwin_done_sample_prob: float = field(
         default=0.4,
         metadata={"help": "Probability of sampling RobotWin Q2 done examples during training."},
+    )
+    robotwin_exclude_episodes: Optional[str] = field(
+        default=None,
+        metadata={
+            "help": "Optional JSON/JSONL file listing (repo, episode_index) pairs to skip during training."
+        },
     )
     data_flatten: bool = field(default=False)
     data_packing: bool = field(default=False)

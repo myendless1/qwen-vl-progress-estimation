@@ -50,26 +50,77 @@ VIEW_LABELS = {
     "right_wrist": "<right wrist>",
 }
 
+DEFAULT_ROBOTWIN_VIEWS = ("main", "left_wrist", "right_wrist")
+
+
+def parse_robotwin_views(raw: str) -> tuple[str, ...]:
+    views = tuple(part.strip() for part in raw.split(",") if part.strip())
+    if not views:
+        raise ValueError("robotwin_views must specify at least one view.")
+    unknown = [view for view in views if view not in VIEW_KEYS]
+    if unknown:
+        raise ValueError(f"Unsupported robotwin views: {unknown}. Expected any of {list(VIEW_KEYS)}.")
+    return views
+
+
+def _observation_prompt(views: Sequence[str]) -> str:
+    if len(views) == 1:
+        return "image observation"
+    return "multi-view image observations"
+
+
 Q1_SYSTEM_PROMPT = (
     "You are a robot task planner. Given the global task, the completed subtasks, "
-    "and multi-view image observations, plan the remaining subtasks from the current state. "
+    "and {observation_prompt}, plan the remaining subtasks from the current state. "
     "Output a JSON array with only subtask_index and subtask_goal."
 )
 
 Q2_SYSTEM_PROMPT = (
     "You are a robot execution status estimator. Given the global task, the completed subtasks, "
-    "the current subtask, and multi-view image observations, predict the requested status values "
+    "the current subtask, and {observation_prompt}, predict the requested status values "
     "using the query tokens. Do not generate a natural-language answer."
 )
 
 
+def _system_prompt(template: str, views: Sequence[str]) -> str:
+    return template.format(observation_prompt=_observation_prompt(views))
+
+
+def _depth_png_to_rgb(encoded: bytes) -> Image.Image:
+    import numpy as np
+
+    depth = np.array(Image.open(io.BytesIO(encoded)), dtype=np.float32)
+    lo, hi = np.percentile(depth, (2, 98))
+    normalized = np.clip((depth - lo) / max(hi - lo, 1e-6), 0.0, 1.0)
+    return Image.fromarray((normalized * 255).astype(np.uint8)).convert("RGB")
+
+
+def _hdf5_num_frames(path: Path) -> int:
+    with h5py.File(path, "r") as f:
+        if "frames" in f:
+            return len(f["frames"])
+        if "depth_mm_png" in f:
+            return len(f["depth_mm_png"])
+    raise KeyError(f"{path} does not contain supported image datasets: frames or depth_mm_png")
+
+
+def _decode_hdf5_frame(dataset, frame_index: int, *, dataset_key: str) -> Image.Image:
+    if frame_index < 0 or frame_index >= len(dataset):
+        raise IndexError(f"frame_index {frame_index} out of range for dataset with length {len(dataset)}")
+    encoded = bytes(dataset[frame_index])
+    if dataset_key == "depth_mm_png":
+        return _depth_png_to_rgb(encoded)
+    return Image.open(io.BytesIO(encoded)).convert("RGB")
+
+
 def _read_hdf5_frame(path: Path, frame_index: int, resize: Optional[tuple[int, int]] = None) -> Image.Image:
     with h5py.File(path, "r") as f:
-        frames = f["frames"]
-        if frame_index < 0 or frame_index >= len(frames):
-            raise IndexError(f"frame_index {frame_index} out of range for {path}")
-        encoded = bytes(frames[frame_index])
-    image = Image.open(io.BytesIO(encoded)).convert("RGB")
+        if "frames" in f:
+            image = _decode_hdf5_frame(f["frames"], frame_index, dataset_key="frames")
+        elif "depth_mm_png" in f:
+            image = _decode_hdf5_frame(f["depth_mm_png"], frame_index, dataset_key="depth_mm_png")
+        else:
+            raise KeyError(f"{path} does not contain supported image datasets: frames or depth_mm_png")
     if resize is not None:
         image = image.resize(resize, Image.Resampling.BICUBIC)
     return image
@@ -79,15 +130,32 @@ def _episode_chunk(episode_index: int, chunks_size: int) -> int:
     return episode_index // chunks_size
 
 
-def _view_hdf5_path(repo_dir: Path, episode_index: int, chunks_size: int, view: str) -> Path:
+def _view_hdf5_path(image_repo_dir: Path, episode_index: int, chunks_size: int, view: str) -> Path:
+    episode_name = f"episode_{episode_index:06d}.hdf5"
+    rel = VIEW_KEYS[view]
+    flat_path = image_repo_dir / rel / episode_name
+    if flat_path.exists():
+        return flat_path
     chunk = _episode_chunk(episode_index, chunks_size)
     return (
-        repo_dir
+        image_repo_dir
         / "videos_240x320_240x320"
         / f"chunk-{chunk:03d}"
-        / VIEW_KEYS[view]
-        / f"episode_{episode_index:06d}.hdf5"
+        / rel
+        / episode_name
     )
+
+
+def _task_resource_repo_dir(data_root: Path, anno_root: Optional[str], task_name: str) -> Path:
+    if anno_root:
+        candidate = Path(anno_root) / task_name
+        if candidate.exists():
+            return candidate
+    return data_root / task_name
+
+
+def _task_anno_dir(data_root: Path, anno_root: Optional[str], task_name: str) -> Path:
+    return _task_resource_repo_dir(data_root, anno_root, task_name) / "anno"
 
 
 def _load_chunks_size(repo_dir: Path) -> int:
@@ -97,6 +165,32 @@ def _load_chunks_size(repo_dir: Path) -> int:
     with open(info_path, "r") as f:
         info = json.load(f)
     return int(info.get("chunks_size", 1000))
+
+
+def load_robotwin_excluded_episodes(path: Optional[str]) -> set[tuple[str, int]]:
+    if not path:
+        return set()
+    exclude_path = Path(path)
+    if not exclude_path.exists():
+        raise FileNotFoundError(f"RobotWin exclude list does not exist: {exclude_path}")
+
+    excluded: set[tuple[str, int]] = set()
+    if exclude_path.suffix == ".jsonl":
+        with open(exclude_path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                item = json.loads(line)
+                excluded.add((str(item["repo"]), int(item["episode_index"])))
+        return excluded
+
+    with open(exclude_path, "r", encoding="utf-8") as f:
+        payload = json.load(f)
+    episodes = payload.get("episodes", payload if isinstance(payload, list) else [])
+    for item in episodes:
+        excluded.add((str(item["repo"]), int(item["episode_index"])))
+    return excluded
 
 
 def _future_subtasks(subtasks: Sequence[Dict[str, Any]], current_index: int) -> List[Dict[str, Any]]:
@@ -119,20 +213,31 @@ def _completed_subtasks(subtasks: Sequence[Dict[str, Any]], current_index: int) 
     ]
 
 
-def _load_observation_images(image_hdf5_paths: Dict[str, Path], frame_index: int) -> Dict[str, Image.Image]:
-    main = _read_hdf5_frame(image_hdf5_paths["main"], frame_index)
-    wrist_size = (max(1, main.width // 2), max(1, main.height // 2))
-    return {
-        "main": main,
-        "left_wrist": _read_hdf5_frame(image_hdf5_paths["left_wrist"], frame_index, resize=wrist_size),
-        "right_wrist": _read_hdf5_frame(image_hdf5_paths["right_wrist"], frame_index, resize=wrist_size),
-    }
+def _load_observation_images(
+    image_hdf5_paths: Dict[str, Path],
+    frame_index: int,
+    views: Sequence[str],
+) -> Dict[str, Image.Image]:
+    images: Dict[str, Image.Image] = {}
+    main = None
+    if "main" in views:
+        main = _read_hdf5_frame(image_hdf5_paths["main"], frame_index)
+        images["main"] = main
+    wrist_size = None
+    if main is not None:
+        wrist_size = (max(1, main.width // 2), max(1, main.height // 2))
+    for view in views:
+        if view == "main":
+            continue
+        images[view] = _read_hdf5_frame(image_hdf5_paths[view], frame_index, resize=wrist_size)
+    return images
 
 
 def _user_content(
     task_goal: str,
     completed: Sequence[Dict[str, Any]],
     images: Dict[str, Image.Image],
+    views: Sequence[str],
     current_goal: Optional[str] = None,
     include_query_tokens: bool = False,
 ) -> List[Dict[str, Any]]:
@@ -144,8 +249,9 @@ def _user_content(
     ]
     if current_goal is not None:
         content.append({"type": "text", "text": f"Current subtask: {current_goal}\n"})
-    content.append({"type": "text", "text": "Image observations:\n"})
-    for view in ("main", "left_wrist", "right_wrist"):
+    observation_label = "Image observation" if len(views) == 1 else "Image observations"
+    content.append({"type": "text", "text": f"{observation_label}:\n"})
+    for view in views:
         content.append({"type": "text", "text": f"{VIEW_LABELS[view]} "})
         content.append({"type": "image", "image": images[view]})
         content.append({"type": "text", "text": "\n"})
@@ -190,6 +296,8 @@ class RobotWinSample:
     task_goal: str
     subtasks: List[Dict[str, Any]]
     current_subtask_index: int
+    views: tuple[str, ...] = DEFAULT_ROBOTWIN_VIEWS
+    image_repo_dir: Optional[Path] = None
     current_done: float = ROBOTWIN_IGNORE_FLOAT
     need_replan: float = ROBOTWIN_IGNORE_FLOAT
     incident: float = ROBOTWIN_IGNORE_FLOAT
@@ -202,12 +310,18 @@ def _robotwin_repo_dirs(
     split: Optional[str] = None,
     test_ratio: float = 0.05,
     split_seed: int = 0,
+    anno_root: Optional[str] = None,
 ) -> List[Path]:
     root = Path(data_root)
     if not root.exists():
         raise FileNotFoundError(f"RobotWin root does not exist: {root}")
 
-    repo_dirs = sorted(p for p in root.iterdir() if p.is_dir() and (p / "anno").exists())
+    repo_dirs = sorted(
+        image_repo_dir
+        for image_repo_dir in root.iterdir()
+        if image_repo_dir.is_dir()
+        and _task_anno_dir(root, anno_root, image_repo_dir.name).exists()
+    )
     if split is None or split == "all":
         return repo_dirs
 
@@ -232,13 +346,37 @@ def _robotwin_repo_dirs(
     return [repo for repo in repo_dirs if repo.name not in test_names]
 
 
-def build_robotwin_split_manifest(data_root: str, test_ratio: float = 0.05, split_seed: int = 0) -> Dict[str, Any]:
+def build_robotwin_split_manifest(
+    data_root: str,
+    test_ratio: float = 0.05,
+    split_seed: int = 0,
+    anno_root: Optional[str] = None,
+) -> Dict[str, Any]:
     root = Path(data_root)
-    all_dirs = _robotwin_repo_dirs(data_root, split="all", test_ratio=test_ratio, split_seed=split_seed)
-    train_dirs = _robotwin_repo_dirs(data_root, split="train", test_ratio=test_ratio, split_seed=split_seed)
-    test_dirs = _robotwin_repo_dirs(data_root, split="test", test_ratio=test_ratio, split_seed=split_seed)
+    all_dirs = _robotwin_repo_dirs(
+        data_root,
+        split="all",
+        test_ratio=test_ratio,
+        split_seed=split_seed,
+        anno_root=anno_root,
+    )
+    train_dirs = _robotwin_repo_dirs(
+        data_root,
+        split="train",
+        test_ratio=test_ratio,
+        split_seed=split_seed,
+        anno_root=anno_root,
+    )
+    test_dirs = _robotwin_repo_dirs(
+        data_root,
+        split="test",
+        test_ratio=test_ratio,
+        split_seed=split_seed,
+        anno_root=anno_root,
+    )
     return {
         "data_root": str(root.resolve()),
+        "anno_root": str(Path(anno_root).resolve()) if anno_root else str(root.resolve()),
         "test_ratio": test_ratio,
         "split_seed": split_seed,
         "num_tasks": len(all_dirs),
@@ -257,8 +395,14 @@ def save_robotwin_split_manifest(
     output_dir: str,
     test_ratio: float = 0.05,
     split_seed: int = 0,
+    anno_root: Optional[str] = None,
 ) -> Path:
-    manifest = build_robotwin_split_manifest(data_root, test_ratio=test_ratio, split_seed=split_seed)
+    manifest = build_robotwin_split_manifest(
+        data_root,
+        test_ratio=test_ratio,
+        split_seed=split_seed,
+        anno_root=anno_root,
+    )
     output_path = Path(output_dir) / "robotwin_split.json"
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with open(output_path, "w") as f:
@@ -274,9 +418,14 @@ def build_robotwin_samples(
     split: Optional[str] = None,
     test_ratio: float = 0.05,
     split_seed: int = 0,
+    anno_root: Optional[str] = None,
+    views: Sequence[str] = DEFAULT_ROBOTWIN_VIEWS,
+    exclude_episodes: Optional[set[tuple[str, int]]] = None,
 ) -> List[RobotWinSample]:
+    active_views = tuple(views)
     def make_q2_sample(
         repo_dir: Path,
+        image_repo_dir: Path,
         image_hdf5_paths: Dict[str, Path],
         frame: int,
         task_goal: str,
@@ -296,6 +445,8 @@ def build_robotwin_samples(
             task_goal=task_goal,
             subtasks=subtasks,
             current_subtask_index=current_subtask_index,
+            views=active_views,
+            image_repo_dir=image_repo_dir,
             current_done=current_done,
             need_replan=ROBOTWIN_IGNORE_FLOAT,
             incident=ROBOTWIN_IGNORE_FLOAT,
@@ -308,11 +459,21 @@ def build_robotwin_samples(
 
     samples: List[RobotWinSample] = []
     episode_count = 0
-    for repo_dir in _robotwin_repo_dirs(data_root, split=split, test_ratio=test_ratio, split_seed=split_seed):
-        anno_dir = repo_dir / "anno"
+    excluded_episode_count = 0
+    data_root_path = Path(data_root)
+    excluded = exclude_episodes or set()
+    for image_repo_dir in _robotwin_repo_dirs(
+        data_root,
+        split=split,
+        test_ratio=test_ratio,
+        split_seed=split_seed,
+        anno_root=anno_root,
+    ):
+        resource_repo_dir = _task_resource_repo_dir(data_root_path, anno_root, image_repo_dir.name)
+        anno_dir = resource_repo_dir / "anno"
         if not anno_dir.exists():
             continue
-        chunks_size = _load_chunks_size(repo_dir)
+        chunks_size = _load_chunks_size(resource_repo_dir)
         for anno_path in sorted(anno_dir.glob("episode_*.json")):
             if max_episodes is not None and episode_count >= max_episodes:
                 return samples
@@ -322,43 +483,63 @@ def build_robotwin_samples(
             if not subtasks:
                 continue
             episode_index = int(anno["episode_index"])
+            if (image_repo_dir.name, episode_index) in excluded:
+                excluded_episode_count += 1
+                continue
             image_hdf5_paths = {
-                view: _view_hdf5_path(repo_dir, episode_index, chunks_size, view)
-                for view in VIEW_KEYS
+                view: _view_hdf5_path(image_repo_dir, episode_index, chunks_size, view)
+                for view in active_views
             }
             if not all(path.exists() for path in image_hdf5_paths.values()):
                 continue
-            state_parquet_path = episode_parquet_path(repo_dir, episode_index, chunks_size)
+            try:
+                available_frames = min(_hdf5_num_frames(path) for path in image_hdf5_paths.values())
+            except (KeyError, OSError):
+                continue
+            num_frames = min(int(anno["num_frames"]), available_frames)
+            if num_frames <= 0:
+                continue
+            state_parquet_path = episode_parquet_path(resource_repo_dir, episode_index, chunks_size)
             states = None
             progress_lookup = None
             if state_parquet_path.exists():
                 try:
                     states = load_episode_states(state_parquet_path)
+                    num_frames = min(num_frames, len(states))
                     progress_lookup = build_subtask_progress_lookup(states, subtasks, anno)
                 except Exception:
                     states = None
                     progress_lookup = None
             task_goal = anno["task_goal"]
-            num_frames = int(anno["num_frames"])
 
             for idx, st in enumerate(subtasks):
+                start = int(st["start_frame"])
+                end = int(st["end_frame"])
+                if start >= num_frames:
+                    continue
+                end = min(end, num_frames - 1)
                 samples.append(
                     RobotWinSample(
                         kind="q1",
-                        repo_dir=repo_dir,
+                        repo_dir=resource_repo_dir,
                         image_hdf5_paths=image_hdf5_paths,
-                        frame_index=max(0, min(int(st["start_frame"]), num_frames - 1)),
-                        frame_start=max(0, min(int(st["start_frame"]), num_frames - 1)),
-                        frame_end=max(0, min(int(st["end_frame"]), num_frames - 1)),
+                        frame_index=max(0, min(start, num_frames - 1)),
+                        frame_start=max(0, min(start, num_frames - 1)),
+                        frame_end=max(0, min(end, num_frames - 1)),
                         task_goal=task_goal,
                         subtasks=subtasks,
                         current_subtask_index=idx,
+                        views=active_views,
+                        image_repo_dir=image_repo_dir,
                     )
                 )
 
             for idx, st in enumerate(subtasks):
                 start = int(st["start_frame"])
                 end = int(st["end_frame"])
+                if start >= num_frames:
+                    continue
+                end = min(end, num_frames - 1)
                 curve = progress_lookup.get(start) if progress_lookup is not None else None
                 current_done_frames = clipped_frames(range(max(start, end - 2), end + 1), num_frames)
                 not_done_end = min(end, min(current_done_frames) - 1) if current_done_frames else end
@@ -372,7 +553,8 @@ def build_robotwin_samples(
                     )
                     samples.append(
                         make_q2_sample(
-                            repo_dir,
+                            resource_repo_dir,
+                            image_repo_dir,
                             image_hdf5_paths,
                             frame,
                             task_goal,
@@ -387,7 +569,8 @@ def build_robotwin_samples(
                 for frame in current_done_frames:
                     samples.append(
                         make_q2_sample(
-                            repo_dir,
+                            resource_repo_dir,
+                            image_repo_dir,
                             image_hdf5_paths,
                             frame,
                             task_goal,
@@ -403,7 +586,8 @@ def build_robotwin_samples(
                     for frame in clipped_frames(range(start, start + 3), num_frames):
                         samples.append(
                             make_q2_sample(
-                                repo_dir,
+                                resource_repo_dir,
+                                image_repo_dir,
                                 image_hdf5_paths,
                                 frame,
                                 task_goal,
@@ -415,6 +599,11 @@ def build_robotwin_samples(
                             )
                         )
             episode_count += 1
+    if excluded and excluded_episode_count:
+        print(
+            f"Skipped {excluded_episode_count} RobotWin episodes from exclude list "
+            f"({len(excluded)} entries)"
+        )
     return samples
 
 
@@ -431,13 +620,14 @@ def _sample_frame_index(sample: RobotWinSample) -> int:
 
 def preprocess_robotwin_sample(sample: RobotWinSample, processor) -> Dict[str, torch.Tensor]:
     frame_index = _sample_frame_index(sample)
-    images = _load_observation_images(sample.image_hdf5_paths, frame_index)
+    views = sample.views
+    images = _load_observation_images(sample.image_hdf5_paths, frame_index, views)
     future = _future_subtasks(sample.subtasks, sample.current_subtask_index)
     completed = _completed_subtasks(sample.subtasks, sample.current_subtask_index)
     if sample.kind == "q1":
-        user_content = _user_content(sample.task_goal, completed, images)
-        messages = _messages_for_sample(Q1_SYSTEM_PROMPT, user_content, assistant=future)
-        prompt_messages = _messages_for_sample(Q1_SYSTEM_PROMPT, user_content)
+        user_content = _user_content(sample.task_goal, completed, images, views)
+        messages = _messages_for_sample(_system_prompt(Q1_SYSTEM_PROMPT, views), user_content, assistant=future)
+        prompt_messages = _messages_for_sample(_system_prompt(Q1_SYSTEM_PROMPT, views), user_content)
         full_result = processor.apply_chat_template(messages, tokenize=True, return_dict=True, return_tensors="pt")
         prompt_result = processor.apply_chat_template(
             prompt_messages,
@@ -456,10 +646,11 @@ def preprocess_robotwin_sample(sample: RobotWinSample, processor) -> Dict[str, t
             sample.task_goal,
             completed,
             images,
+            views,
             current_goal=current["subtask_goal"],
             include_query_tokens=True,
         )
-        messages = _messages_for_sample(Q2_SYSTEM_PROMPT, user_content)
+        messages = _messages_for_sample(_system_prompt(Q2_SYSTEM_PROMPT, views), user_content)
         full_result = processor.apply_chat_template(
             messages,
             tokenize=True,
@@ -504,6 +695,11 @@ class RobotWinDataset(Dataset):
             split=split,
             test_ratio=data_args.robotwin_test_ratio,
             split_seed=data_args.robotwin_split_seed,
+            anno_root=data_args.robotwin_anno_root,
+            views=parse_robotwin_views(data_args.robotwin_views),
+            exclude_episodes=load_robotwin_excluded_episodes(
+                getattr(data_args, "robotwin_exclude_episodes", None)
+            ),
         )
         self.q1_samples = [sample for sample in self.samples if sample.kind == "q1"]
         self.q2_samples = [sample for sample in self.samples if sample.kind == "q2"]

@@ -1,0 +1,22 @@
+{
+  "annotations": 27500,
+  "issue_repos": {
+    "blocks_ranking_size-aloha-agilex_randomized_500": 2,
+    "open_microwave-aloha-agilex_randomized_500": 1,
+    "place_bread_basket-aloha-agilex_randomized_500": 1,
+    "place_bread_skillet-aloha-agilex_randomized_500": 2,
+    "turn_switch-aloha-agilex_randomized_500": 3
+  },
+  "issue_rules": {
+    "min_frames": 1,
+    "open_close_no_displacement": 1,
+    "single_arm_label_maybe_flipped": 1,
+    "single_arm_other_arm_static": 6
+  },
+  "issues": 9,
+  "jsonl_log": "/media/damoxing/fileset/Qwen3-VL/qwen-vl-finetune/scripts/curation/tests/robotwin_anno_eval_latest.jsonl",
+  "only": null,
+  "repos": 100,
+  "root": "/media/damoxing/datasets/vae4d/lerobot-vae4d-org/robotwin_gt_depth",
+  "subtasks": 159830
+}

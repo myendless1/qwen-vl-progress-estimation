@@ -1,0 +1,13 @@
+RoboTwin annotation evaluation
+root: /media/damoxing/datasets/vae4d/lerobot-vae4d-org/robotwin_gt_depth
+repos: 100
+annotations: 27500
+subtasks: 159830
+issues: 9
+jsonl_log: /media/damoxing/fileset/Qwen3-VL/qwen-vl-finetune/scripts/curation/tests/robotwin_anno_eval_latest.jsonl
+
+issues_by_rule:
+  single_arm_other_arm_static: 6
+  open_close_no_displacement: 1
+  min_frames: 1
+  single_arm_label_maybe_flipped: 1

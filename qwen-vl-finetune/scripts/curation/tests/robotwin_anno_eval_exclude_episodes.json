@@ -1,0 +1,14 @@
+{
+  "source_log": "qwen-vl-finetune/scripts/curation/tests/robotwin_anno_eval_latest.jsonl",
+  "episodes": [
+    {"repo": "blocks_ranking_size-aloha-agilex_randomized_500", "episode_index": 54},
+    {"repo": "blocks_ranking_size-aloha-agilex_randomized_500", "episode_index": 227},
+    {"repo": "open_microwave-aloha-agilex_randomized_500", "episode_index": 222},
+    {"repo": "place_bread_basket-aloha-agilex_randomized_500", "episode_index": 62},
+    {"repo": "place_bread_skillet-aloha-agilex_randomized_500", "episode_index": 81},
+    {"repo": "place_bread_skillet-aloha-agilex_randomized_500", "episode_index": 183},
+    {"repo": "turn_switch-aloha-agilex_randomized_500", "episode_index": 137},
+    {"repo": "turn_switch-aloha-agilex_randomized_500", "episode_index": 215},
+    {"repo": "turn_switch-aloha-agilex_randomized_500", "episode_index": 339}
+  ]
+}
