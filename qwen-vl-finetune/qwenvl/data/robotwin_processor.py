@@ -14,9 +14,11 @@ from torch.utils.data import Dataset
 from .data_processor import IGNORE_INDEX, get_rope_index_2, get_rope_index_25, get_rope_index_3, pad_and_cat, update_processor_pixels
 from .robotwin_progress import (
     build_subtask_progress_lookup,
+    current_done_frame_indices,
     episode_parquet_path,
     load_episode_states,
     progress_for_subtask,
+    select_undone_frame_indices,
 )
 
 
@@ -28,6 +30,7 @@ QUERY_TOKENS = {
 }
 
 ROBOTWIN_IGNORE_FLOAT = -100.0
+PREV_DONE_MAX_FRAMES = 8
 
 
 def robotwin_special_tokens() -> List[str]:
@@ -421,6 +424,7 @@ def build_robotwin_samples(
     anno_root: Optional[str] = None,
     views: Sequence[str] = DEFAULT_ROBOTWIN_VIEWS,
     exclude_episodes: Optional[set[tuple[str, int]]] = None,
+    q2_progress_bucket_size: float = 0.01,
 ) -> List[RobotWinSample]:
     active_views = tuple(views)
     def make_q2_sample(
@@ -541,9 +545,20 @@ def build_robotwin_samples(
                     continue
                 end = min(end, num_frames - 1)
                 curve = progress_lookup.get(start) if progress_lookup is not None else None
-                current_done_frames = clipped_frames(range(max(start, end - 2), end + 1), num_frames)
+                current_done_frames = current_done_frame_indices(
+                    st, num_frames, states=states, anno=anno, curve=curve
+                )
                 not_done_end = min(end, min(current_done_frames) - 1) if current_done_frames else end
-                for frame in range(start, not_done_end + 1, max(1, q2_frame_stride)):
+                for frame in select_undone_frame_indices(
+                    start,
+                    not_done_end,
+                    subtask=st,
+                    states=states,
+                    anno=anno,
+                    curve=curve,
+                    q2_frame_stride=q2_frame_stride,
+                    q2_progress_bucket_size=q2_progress_bucket_size,
+                ):
                     progress = progress_for_subtask(
                         st,
                         frame,
@@ -583,7 +598,7 @@ def build_robotwin_samples(
                     )
 
                 if idx > 0:
-                    for frame in clipped_frames(range(start, start + 3), num_frames):
+                    for frame in clipped_frames(range(start, start + PREV_DONE_MAX_FRAMES), num_frames):
                         samples.append(
                             make_q2_sample(
                                 resource_repo_dir,
@@ -699,6 +714,9 @@ class RobotWinDataset(Dataset):
             views=parse_robotwin_views(data_args.robotwin_views),
             exclude_episodes=load_robotwin_excluded_episodes(
                 getattr(data_args, "robotwin_exclude_episodes", None)
+            ),
+            q2_progress_bucket_size=float(
+                getattr(data_args, "robotwin_q2_progress_bucket_size", 0.01)
             ),
         )
         self.q1_samples = [sample for sample in self.samples if sample.kind == "q1"]

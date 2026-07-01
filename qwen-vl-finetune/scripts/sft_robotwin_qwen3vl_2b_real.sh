@@ -32,8 +32,8 @@ export MASTER_ADDR MASTER_PORT
 MODEL_NAME_OR_PATH="${MODEL_NAME_OR_PATH:-/media/damoxing/ckp/qwen_ft/Qwen3-VL-2B-Instruct}"
 DATA_ROOT="${DATA_ROOT:-/media/damoxing/datasets/VLN-CE/cogwam_data/20260629}"
 ANNO_ROOT="${ANNO_ROOT:-${DATA_ROOT}}"
-ROBOTWIN_VIEWS="${ROBOTWIN_VIEWS:-main}"
-OUTPUT_DIR="${OUTPUT_DIR:-/media/damoxing/ckp/qwen_ft/robotwin_qwen3vl_2b_real}"
+ROBOTWIN_VIEWS="${ROBOTWIN_VIEWS:-main,left_wrist,right_wrist}"
+OUTPUT_DIR="${OUTPUT_DIR:-/media/damoxing/ckp/qwen_ft/robotwin_qwen3vl_2b_real-f1}"
 ROBOTWIN_INIT_CHECKPOINT="${ROBOTWIN_INIT_CHECKPOINT:-${OUTPUT_DIR}/pytorch_model.bin}"
 export ATTN_IMPLEMENTATION="${ATTN_IMPLEMENTATION:-sdpa}"
 export TENSORBOARD_LOGGING_DIR="${TENSORBOARD_LOGGING_DIR:-${OUTPUT_DIR}/tb}"
@@ -55,7 +55,8 @@ fi
   --robotwin_anno_root "${ANNO_ROOT}" \
   --robotwin_views "${ROBOTWIN_VIEWS}" \
   --robotwin_test_ratio 0.05 \
-  --robotwin_q2_frame_stride 8 \
+  --robotwin_q2_frame_stride 1 \
+  --robotwin_q2_progress_bucket_size 0.01 \
   --robotwin_boundary_extra_frames 2 \
   --robotwin_done_sample_prob 0.4 \
   --output_dir "${OUTPUT_DIR}" \

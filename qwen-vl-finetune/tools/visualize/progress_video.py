@@ -28,6 +28,7 @@ from qwenvl.data.robotwin_processor import (  # noqa: E402
 from qwenvl.data.robotwin_progress import (  # noqa: E402
     _component_progress,
     build_subtask_progress_lookup,
+    current_done_frame_indices,
     episode_parquet_path,
     load_episode_states,
     progress_for_subtask,
@@ -83,10 +84,17 @@ def build_progress_rows(
     for frame in range(0, num_frames, max(1, stride)):
         subtask_index = subtask_index_for_frame(subtasks, frame)
         current = subtasks[subtask_index]
-        start = int(current["start_frame"])
-        end = int(current["end_frame"])
-        done_start = max(start, end - 2)
-        done = 1.0 if frame >= done_start else 0.0
+        curve = progress_lookup.get(int(current["start_frame"])) if progress_lookup is not None else None
+        done_frames = set(
+            current_done_frame_indices(
+                current,
+                num_frames,
+                states=states,
+                anno=anno,
+                curve=curve,
+            )
+        )
+        done = 1.0 if frame in done_frames else 0.0
         curve = progress_lookup.get(start) if progress_lookup is not None else None
         motion_progress = 1.0 if done else progress_for_subtask(
             current,

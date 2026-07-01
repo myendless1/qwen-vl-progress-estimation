@@ -31,12 +31,28 @@ def parse_args():
     parser.add_argument("--base-model", default="/media/damoxing/ckp/qwen_ft/Qwen3-VL-2B-Instruct")
     parser.add_argument("--checkpoint", default="/media/damoxing/ckp/qwen_ft/robotwin_qwen3vl_2b")
     parser.add_argument("--data-root", default="/media/damoxing/datasets/vae4d/lerobot-vae4d-org/robotwin_gt_depth")
+    parser.add_argument(
+        "--anno-root",
+        default=None,
+        help="Optional anno/meta root. When set, images come from --data-root and annotations from --anno-root.",
+    )
+    parser.add_argument(
+        "--views",
+        default="main,left_wrist,right_wrist",
+        help="Comma-separated camera views, e.g. 'main' or 'main,left_wrist,right_wrist'.",
+    )
     parser.add_argument("--output-dir", default="/media/damoxing/ckp/qwen_ft/robotwin_qwen3vl_2b/eval_q2")
     parser.add_argument("--split", choices=("train", "test", "all"), default="test")
     parser.add_argument("--test-ratio", type=float, default=0.05)
     parser.add_argument("--split-seed", type=int, default=0)
     parser.add_argument("--max-episodes", type=int, default=None)
     parser.add_argument("--q2-frame-stride", type=int, default=8)
+    parser.add_argument(
+        "--q2-progress-bucket-size",
+        type=float,
+        default=0.01,
+        help="Undone progress bucket width; <=0 falls back to q2-frame-stride.",
+    )
     parser.add_argument("--boundary-extra-frames", type=int, default=2)
     parser.add_argument("--model-max-length", type=int, default=4096)
     parser.add_argument("--batch-size", type=int, default=4)
@@ -124,6 +140,8 @@ def main():
             "checkpoint": args.checkpoint,
             "base_model": args.base_model,
             "data_root": args.data_root,
+            "anno_root": args.anno_root,
+            "views": args.views,
             "split": args.split,
             "test_ratio": args.test_ratio,
             "split_seed": args.split_seed,
@@ -137,11 +155,14 @@ def main():
         "checkpoint": args.checkpoint,
         "base_model": args.base_model,
         "data_root": args.data_root,
+        "anno_root": args.anno_root,
+        "views": args.views,
         "split": args.split,
         "test_ratio": args.test_ratio,
         "split_seed": args.split_seed,
         "max_episodes": args.max_episodes,
         "q2_frame_stride": args.q2_frame_stride,
+        "q2_progress_bucket_size": args.q2_progress_bucket_size,
         "boundary_extra_frames": args.boundary_extra_frames,
         "threshold": args.threshold,
         "predictions_csv": str(predictions_csv),

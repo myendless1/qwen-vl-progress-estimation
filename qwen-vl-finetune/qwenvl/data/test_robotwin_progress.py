@@ -6,6 +6,8 @@ from qwenvl.data.robotwin_progress import (
     build_subtask_progress_curve,
     progress_for_subtask,
     progress_from_curve,
+    select_frames_by_progress_bucket,
+    select_undone_frame_indices,
     time_progress_for_subtask,
 )
 
@@ -61,6 +63,54 @@ class RobotWinProgressTest(unittest.TestCase):
         subtask = {"start_frame": 0, "end_frame": 5, "subtask_goal": "Move the left arm.", "subtask_type": "move"}
         anno = {"metadata": {}}
         self.assertAlmostEqual(progress_for_subtask(subtask, 3, states=states, anno=anno), 0.6)
+
+    def test_progress_bucket_collapses_plateau_frames(self):
+        frame_progress = [
+            (10, 0.061),
+            (11, 0.062),
+            (12, 0.062),
+            (13, 0.062),
+            (14, 0.063),
+            (15, 0.071),
+        ]
+        selected = select_frames_by_progress_bucket(frame_progress, bucket_size=0.01)
+        self.assertEqual(selected, [14, 15])
+
+    def test_progress_bucket_prefers_bucket_center_on_tie(self):
+        frame_progress = [(0, 0.004), (1, 0.006)]
+        selected = select_frames_by_progress_bucket(frame_progress, bucket_size=0.01)
+        self.assertEqual(selected, [1])
+
+    def test_select_undone_frame_indices_uses_stride_when_bucketing_disabled(self):
+        subtask = {"start_frame": 0, "end_frame": 10, "subtask_goal": "Move the left arm.", "subtask_type": "move"}
+        selected = select_undone_frame_indices(
+            0,
+            10,
+            subtask=subtask,
+            q2_frame_stride=3,
+            q2_progress_bucket_size=0.0,
+        )
+        self.assertEqual(selected, [0, 3, 6, 9])
+
+    def test_select_undone_frame_indices_buckets_linear_progress(self):
+        states = np.zeros((11, 16), dtype=np.float32)
+        states[:, 3:7] = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
+        for frame in range(1, 11):
+            states[frame, 0] = frame / 10.0
+        subtask = {"start_frame": 0, "end_frame": 10, "subtask_goal": "Move the left arm.", "subtask_type": "move"}
+        curve = build_subtask_progress_curve(states, 0, 10, ("left",))
+        all_frames = list(range(0, 10))
+        selected = select_undone_frame_indices(
+            0,
+            9,
+            subtask=subtask,
+            curve=curve,
+            q2_progress_bucket_size=0.1,
+        )
+        self.assertLess(len(selected), len(all_frames))
+        self.assertEqual(selected, sorted(set(selected)))
+        self.assertIn(0, selected)
+        self.assertIn(9, selected)
 
 
 if __name__ == "__main__":

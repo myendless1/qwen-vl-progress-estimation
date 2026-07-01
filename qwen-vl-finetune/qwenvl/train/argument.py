@@ -38,12 +38,23 @@ class DataArguments:
         metadata={"help": "Seed for deterministic RobotWin task-level train/test split."},
     )
     robotwin_q2_frame_stride: int = field(
-        default=8,
-        metadata={"help": "Frame stride for regular RobotWin Q2 samples."},
+        default=1,
+        metadata={
+            "help": "Frame stride for RobotWin Q2 undone samples when progress bucketing is disabled."
+        },
+    )
+    robotwin_q2_progress_bucket_size: float = field(
+        default=0.01,
+        metadata={
+            "help": (
+                "Bucket width for RobotWin Q2 undone progress sampling. "
+                "One frame is kept per bucket; <=0 disables bucketing and uses frame stride."
+            )
+        },
     )
     robotwin_boundary_extra_frames: int = field(
         default=2,
-        metadata={"help": "Deprecated compatibility option; RobotWin Q2 done frames are fixed to three-frame windows."},
+        metadata={"help": "Deprecated; current_done frames now use progress >= 0.995 from end backward."},
     )
     robotwin_done_sample_prob: float = field(
         default=0.4,

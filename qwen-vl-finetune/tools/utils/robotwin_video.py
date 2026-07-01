@@ -18,6 +18,7 @@ from qwenvl.data.robotwin_processor import (
 )
 from qwenvl.data.robotwin_progress import (
     build_subtask_progress_lookup,
+    current_done_frame_indices,
     episode_parquet_path,
     load_episode_states,
     progress_for_subtask,
@@ -39,18 +40,23 @@ def build_episode_samples(
     max_frames: Optional[int] = None,
     start_frame: Optional[int] = None,
     end_frame: Optional[int] = None,
+    frame_indices: Optional[Sequence[int]] = None,
     fixed_subtask_index: Optional[int] = None,
+    image_repo_dir: Optional[Path] = None,
+    views: Sequence[str] = ("main", "left_wrist", "right_wrist"),
 ) -> Tuple[Dict, List[RobotWinSample]]:
     anno_path = Path(anno_path)
     repo_dir = anno_path.parent.parent
+    image_repo_dir = Path(image_repo_dir) if image_repo_dir is not None else repo_dir
     with open(anno_path, "r") as f:
         anno = json.load(f)
     subtasks = [dict(item) for item in anno["subtasks"]]
     episode_index = int(anno["episode_index"])
     chunks_size = _load_chunks_size(repo_dir)
+    active_views = tuple(views)
     image_hdf5_paths = {
-        view: _view_hdf5_path(repo_dir, episode_index, chunks_size, view)
-        for view in ("main", "left_wrist", "right_wrist")
+        view: _view_hdf5_path(image_repo_dir, episode_index, chunks_size, view)
+        for view in active_views
     }
     num_frames = int(anno["num_frames"])
     if max_frames is not None:
@@ -58,6 +64,10 @@ def build_episode_samples(
 
     first_frame = max(0, start_frame or 0)
     last_frame = num_frames - 1 if end_frame is None else min(num_frames - 1, end_frame)
+    if frame_indices is not None:
+        frames_to_build = sorted({int(frame) for frame in frame_indices})
+    else:
+        frames_to_build = list(range(first_frame, last_frame + 1))
 
     progress_lookup = None
     states = None
@@ -71,7 +81,8 @@ def build_episode_samples(
             progress_lookup = None
 
     samples = []
-    for frame in range(first_frame, last_frame + 1):
+    done_frame_cache: Dict[int, set] = {}
+    for frame in frames_to_build:
         current_idx = fixed_subtask_index
         if current_idx is None:
             current_idx = subtask_index_for_frame(subtasks, frame)
@@ -79,9 +90,18 @@ def build_episode_samples(
             raise IndexError(f"fixed_subtask_index {current_idx} out of range for {len(subtasks)} subtasks.")
         current = subtasks[current_idx]
         start = int(current["start_frame"])
-        end = int(current["end_frame"])
-        done_start = max(start, end - 2)
-        done = 1.0 if frame >= done_start else 0.0
+        if start not in done_frame_cache:
+            curve = progress_lookup.get(start) if progress_lookup is not None else None
+            done_frame_cache[start] = set(
+                current_done_frame_indices(
+                    current,
+                    num_frames,
+                    states=states,
+                    anno=anno,
+                    curve=curve,
+                )
+            )
+        done = 1.0 if frame in done_frame_cache[start] else 0.0
         curve = progress_lookup.get(start) if progress_lookup is not None else None
         progress = 1.0 if done else progress_for_subtask(
             current,
@@ -101,6 +121,8 @@ def build_episode_samples(
                 task_goal=anno["task_goal"],
                 subtasks=subtasks,
                 current_subtask_index=current_idx,
+                views=active_views,
+                image_repo_dir=image_repo_dir,
                 current_done=done,
                 progress=progress,
                 q2_group="trajectory",
@@ -167,30 +189,69 @@ def resize_letterbox(image, size, fill=(18, 20, 24)):
     return canvas
 
 
+def truncate_text(draw, text: str, font, max_width: int) -> str:
+    text = str(text)
+    if not text:
+        return ""
+    if draw.textlength(text, font=font) <= max_width:
+        return text
+    trimmed = text
+    while trimmed and draw.textlength(trimmed + "...", font=font) > max_width:
+        trimmed = trimmed[:-1]
+    return f"{trimmed}..." if trimmed else "..."
+
+
 def draw_top_panel(sample, row, anno, width, height, font):
     canvas = Image.new("RGB", (width, height), (242, 244, 247))
     draw = ImageDraw.Draw(canvas)
     pad = 24
-    title_h = 54
+    title_y = 14
+    instruction_y = 32
+    title_h = 62
     gap = 14
-    images = _load_observation_images(sample.image_hdf5_paths, sample.frame_index)
-    main_w = int(width * 0.66)
-    side_w = width - main_w - pad * 2 - gap
+    views = tuple(sample.views) if getattr(sample, "views", None) else tuple(sample.image_hdf5_paths)
+    images = _load_observation_images(sample.image_hdf5_paths, sample.frame_index, views)
     image_y = title_h + pad
     image_h = height - image_y - pad
-    wrist_h = (image_h - gap) // 2
-    boxes = (
-        ("main", images["main"], (pad, image_y, main_w, image_h)),
-        ("left wrist", images["left_wrist"], (pad + main_w + gap, image_y, side_w, wrist_h)),
-        ("right wrist", images["right_wrist"], (pad + main_w + gap, image_y + wrist_h + gap, side_w, image_h - wrist_h - gap)),
-    )
+    boxes = []
+    if views == ("main",) or set(views) == {"main"}:
+        boxes = (("main", images["main"], (pad, image_y, width - pad * 2, image_h)),)
+    else:
+        main_w = int(width * 0.66)
+        side_w = width - main_w - pad * 2 - gap
+        wrist_h = (image_h - gap) // 2
+        if "main" in images:
+            boxes.append(("main", images["main"], (pad, image_y, main_w, image_h)))
+        if "left_wrist" in images:
+            boxes.append(
+                ("left wrist", images["left_wrist"], (pad + main_w + gap, image_y, side_w, wrist_h))
+            )
+        if "right_wrist" in images:
+            boxes.append(
+                (
+                    "right wrist",
+                    images["right_wrist"],
+                    (pad + main_w + gap, image_y + wrist_h + gap, side_w, image_h - wrist_h - gap),
+                )
+            )
+        if not boxes:
+            view = views[0]
+            boxes = ((view, images[view], (pad, image_y, width - pad * 2, image_h)),)
     title = f"{sample.repo_dir.name} episode_{int(anno['episode_index']):06d} frame={sample.frame_index} subtask={sample.current_subtask_index}"
-    draw.text((pad, 18), title[:180], font=font, fill=(20, 24, 32))
+    draw.text((pad, title_y), title[:180], font=font, fill=(20, 24, 32))
+    instruction = row.get("current_subtask_goal")
+    if not instruction and sample.subtasks:
+        idx = int(sample.current_subtask_index)
+        if 0 <= idx < len(sample.subtasks):
+            instruction = sample.subtasks[idx].get("subtask_goal", "")
+    instruction = truncate_text(draw, instruction or "", font, width - 2 * pad)
+    if instruction:
+        draw.text((pad, instruction_y), instruction, font=font, fill=(60, 68, 80))
     metric = (
         f"done gt={int(float(row['done_label']) >= 0.5)} pred={int(float(row['done_pred']))} prob={float(row['done_prob']):.3f}  "
         f"progress gt={float(row['progress_label']):.3f} pred={float(row['progress_pred']):.3f}"
     )
-    draw.text((max(pad, width - pad - 560), 18), metric, font=font, fill=(20, 24, 32))
+    draw.text((max(pad, width - pad - 560), title_y), metric, font=font, fill=(20, 24, 32))
     for label, image, box in boxes:
         x, y, w, h = box
         panel = resize_letterbox(image, (w, h))
@@ -220,38 +281,144 @@ def point_for(row, key, box, num_frames):
     return x, y
 
 
+def without_prev_done(rows):
+    return [row for row in rows if row.get("q2_group") != "prev_done"]
+
+
+def only_prev_done(rows):
+    return [row for row in rows if row.get("q2_group") == "prev_done"]
+
+
+def _ordered_rows(rows):
+    return sorted(rows, key=lambda row: (int(row["frame_index"]), int(row.get("current_subtask_index", 0))))
+
+
+def _prev_done_groups(rows):
+    groups = {}
+    for row in only_prev_done(rows):
+        key = int(row.get("current_subtask_index", 0))
+        groups.setdefault(key, []).append(row)
+    return list(groups.values())
+
+
+def draw_points_with_polyline(
+    draw,
+    rows,
+    key,
+    box,
+    line_color,
+    point_color,
+    point_radius=3,
+    line_width=2,
+    num_frames=None,
+):
+    if not rows:
+        return
+    if num_frames is None:
+        num_frames = max(int(row["frame_index"]) for row in rows) + 1
+    ordered = _ordered_rows(rows)
+    if len(ordered) >= 2:
+        draw.line(
+            [point_for(row, key, box, num_frames) for row in ordered],
+            fill=line_color,
+            width=line_width,
+            joint="curve",
+        )
+    for row in ordered:
+        x, y = point_for(row, key, box, num_frames)
+        draw.ellipse(
+            (x - point_radius, y - point_radius, x + point_radius, y + point_radius),
+            fill=point_color,
+        )
+
+
 def draw_polyline(draw, rows, key, box, color, width=3, num_frames=None):
     if len(rows) < 2:
         return
     if num_frames is None:
         num_frames = max(int(row["frame_index"]) for row in rows) + 1
-    draw.line([point_for(row, key, box, num_frames) for row in rows], fill=color, width=width, joint="curve")
+    ordered = _ordered_rows(rows)
+    draw.line(
+        [point_for(row, key, box, num_frames) for row in ordered],
+        fill=color,
+        width=width,
+        joint="curve",
+    )
 
 
 def draw_done_predictions(draw, rows, box, num_frames):
-    if len(rows) >= 2:
-        for prev, cur in zip(rows[:-1], rows[1:]):
+    main_rows = without_prev_done(rows)
+    if len(main_rows) >= 2:
+        ordered = _ordered_rows(main_rows)
+        for prev, cur in zip(ordered[:-1], ordered[1:]):
             color = (20, 150, 70) if int(float(prev["done_correct"])) and int(float(cur["done_correct"])) else (210, 45, 45)
-            draw.line((point_for(prev, "done_prob", box, num_frames), point_for(cur, "done_prob", box, num_frames)), fill=color, width=3)
-    for row in rows:
+            draw.line(
+                (point_for(prev, "done_prob", box, num_frames), point_for(cur, "done_prob", box, num_frames)),
+                fill=color,
+                width=3,
+            )
+    for row in main_rows:
         x, y = point_for(row, "done_prob", box, num_frames)
         color = (20, 150, 70) if int(float(row["done_correct"])) else (210, 45, 45)
         draw.ellipse((x - 3, y - 3, x + 3, y + 3), fill=color)
 
+    for group in _prev_done_groups(rows):
+        if len(group) >= 2:
+            ordered = _ordered_rows(group)
+            draw.line(
+                [point_for(row, "done_prob", box, num_frames) for row in ordered],
+                fill=(245, 145, 35),
+                width=2,
+                joint="curve",
+            )
+        for row in group:
+            x, y = point_for(row, "done_prob", box, num_frames)
+            point_color = (20, 150, 70) if int(float(row["done_correct"])) else (210, 45, 45)
+            draw.ellipse((x - 3, y - 3, x + 3, y + 3), fill=point_color)
 
-def draw_curve_panel(rows, sample, current_frame, width, height, font, event_frame: Optional[int] = None):
+
+def draw_progress_predictions(draw, rows, box, num_frames):
+    main_rows = without_prev_done(rows)
+    draw_polyline(draw, main_rows, "progress_pred", box, (35, 105, 210), width=3, num_frames=num_frames)
+    for group in _prev_done_groups(rows):
+        draw_points_with_polyline(
+            draw,
+            group,
+            "progress_pred",
+            box,
+            line_color=(245, 145, 35),
+            point_color=(245, 145, 35),
+            point_radius=3,
+            line_width=2,
+            num_frames=num_frames,
+        )
+
+
+def draw_curve_panel(
+    rows,
+    sample,
+    current_frame,
+    width,
+    height,
+    font,
+    event_frame: Optional[int] = None,
+    timeline_num_frames: Optional[int] = None,
+):
     canvas = Image.new("RGB", (width, height), "white")
     draw = ImageDraw.Draw(canvas)
-    rows = sorted(rows, key=lambda item: int(item["frame_index"]))
-    num_frames = max(int(row["frame_index"]) for row in rows) + 1
+    rows = sorted(rows, key=lambda item: (int(item["frame_index"]), int(item.get("current_subtask_index", 0))))
+    curve_rows = without_prev_done(rows)
+    num_frames = timeline_num_frames
+    if num_frames is None:
+        num_frames = max(int(row["frame_index"]) for row in rows) + 1
     done_box = (70, 54, width - 36, height // 2 - 28)
     progress_box = (70, height // 2 + 44, width - 36, height - 58)
-    draw_axes(draw, done_box, "Done: gray=label, green/red=pred probability", font)
-    draw_axes(draw, progress_box, "Progress: gray=label, blue=prediction", font)
-    draw_polyline(draw, rows, "done_label", done_box, (150, 150, 150), width=2, num_frames=num_frames)
+    draw_axes(draw, done_box, "Done: gray=label; pred green/red, prev_done orange", font)
+    draw_axes(draw, progress_box, "Progress: gray=label; pred blue, prev_done orange", font)
+    draw_polyline(draw, curve_rows, "done_label", done_box, (150, 150, 150), width=2, num_frames=num_frames)
     draw_done_predictions(draw, rows, done_box, num_frames)
-    draw_polyline(draw, rows, "progress_label", progress_box, (170, 170, 170), width=2, num_frames=num_frames)
-    draw_polyline(draw, rows, "progress_pred", progress_box, (35, 105, 210), width=3, num_frames=num_frames)
+    draw_polyline(draw, curve_rows, "progress_label", progress_box, (170, 170, 170), width=2, num_frames=num_frames)
+    draw_progress_predictions(draw, rows, progress_box, num_frames)
     for idx, subtask in enumerate(sample.subtasks):
         start = int(subtask["start_frame"])
         if start < 0 or start >= num_frames:
@@ -285,6 +452,7 @@ def save_q2_video(
     top_height: int,
     curve_height: int,
     event_frame: Optional[int] = None,
+    timeline_num_frames: Optional[int] = None,
 ) -> str:
     if shutil.which("ffmpeg") is None:
         raise RuntimeError("ffmpeg is required to save the progress video.")
@@ -301,7 +469,16 @@ def save_q2_video(
         tmp_dir = Path(tmp_dir)
         for idx, (sample, row) in enumerate(pairs):
             top = draw_top_panel(sample, row, anno, width, top_height, font)
-            curve = draw_curve_panel(rows, sample, int(row["frame_index"]), width, curve_height, font, event_frame=event_frame)
+            curve = draw_curve_panel(
+                rows,
+                sample,
+                int(row["frame_index"]),
+                width,
+                curve_height,
+                font,
+                event_frame=event_frame,
+                timeline_num_frames=timeline_num_frames,
+            )
             frame = Image.new("RGB", (width, height), "white")
             frame.paste(top, (0, 0))
             frame.paste(curve, (0, top_height))

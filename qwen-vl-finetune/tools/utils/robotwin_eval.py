@@ -28,6 +28,7 @@ from qwenvl.data.robotwin_processor import (
     _messages_for_sample,
     _user_content,
     build_robotwin_samples,
+    parse_robotwin_views,
     preprocess_robotwin_sample,
 )
 from qwenvl.train.robotwin_model import RobotWinQwenWrapper
@@ -191,6 +192,7 @@ def load_eval_context(args, prefer_checkpoint_processor: bool = False) -> Dict[s
 
 
 def build_samples(args, kind: Optional[str] = None):
+    views = parse_robotwin_views(getattr(args, "views", "main,left_wrist,right_wrist"))
     samples = build_robotwin_samples(
         args.data_root,
         q2_frame_stride=args.q2_frame_stride,
@@ -199,6 +201,9 @@ def build_samples(args, kind: Optional[str] = None):
         split=args.split,
         test_ratio=args.test_ratio,
         split_seed=args.split_seed,
+        anno_root=getattr(args, "anno_root", None),
+        views=views,
+        q2_progress_bucket_size=float(getattr(args, "q2_progress_bucket_size", 0.01)),
     )
     return [sample for sample in samples if kind is None or sample.kind == kind]
 
@@ -370,7 +375,7 @@ def parse_json_or_none(text: str):
 
 
 def prepare_q1_prompt(sample, processor):
-    images = _load_observation_images(sample.image_hdf5_paths, sample.frame_index)
+    images = _load_observation_images(sample.image_hdf5_paths, sample.frame_index, sample.views)
     completed = _completed_subtasks(sample.subtasks, sample.current_subtask_index)
     user_content = _user_content(sample.task_goal, completed, images)
     messages = _messages_for_sample(Q1_SYSTEM_PROMPT, user_content)

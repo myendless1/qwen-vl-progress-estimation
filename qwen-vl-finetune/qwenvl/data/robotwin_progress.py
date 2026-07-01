@@ -5,7 +5,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Mapping, Sequence
+from collections import defaultdict
+from typing import Any, Dict, List, Mapping, Sequence
 
 import numpy as np
 
@@ -28,6 +29,7 @@ ANNOTATION_ARM_FLIP = {
     "right": "left",
 }
 MOTION_EPS = 1e-12
+DONE_PROGRESS_THRESHOLD = 0.995
 
 
 def episode_parquet_path(repo_dir: Path, episode_index: int, chunks_size: int) -> Path:
@@ -253,6 +255,128 @@ def progress_for_subtask(
     if progress is None:
         return time_progress_for_subtask(subtask, frame)
     return progress
+
+
+def motion_progress_for_subtask(
+    subtask: Mapping[str, Any],
+    frame: int,
+    *,
+    states: np.ndarray | None = None,
+    anno: Mapping[str, Any] | None = None,
+    curve: SubtaskProgressCurve | None = None,
+) -> float:
+    """Motion-based progress without forcing 1.0 at frame >= end."""
+    start = int(subtask["start_frame"])
+    end = int(subtask["end_frame"])
+    if frame <= start:
+        return 0.0
+
+    if curve is None:
+        if states is None or anno is None:
+            return time_progress_for_subtask(subtask, frame)
+        curve = build_subtask_progress_curve(states, start, end, active_state_arms(subtask, anno))
+
+    if not curve.has_motion():
+        return time_progress_for_subtask(subtask, frame)
+
+    offset = max(0, min(frame - start, len(curve.trans) - 1))
+    progress = progress_from_curve(curve, offset)
+    if progress is None:
+        return time_progress_for_subtask(subtask, frame)
+    return progress
+
+
+def current_done_frame_indices(
+    subtask: Mapping[str, Any],
+    num_frames: int,
+    *,
+    states: np.ndarray | None = None,
+    anno: Mapping[str, Any] | None = None,
+    curve: SubtaskProgressCurve | None = None,
+    threshold: float = DONE_PROGRESS_THRESHOLD,
+) -> list[int]:
+    """Frames marked done by scanning backward from end until progress < threshold."""
+    start = int(subtask["start_frame"])
+    end = min(int(subtask["end_frame"]), num_frames - 1)
+    if start >= num_frames or end < start:
+        return []
+
+    done_frames: list[int] = []
+    for frame in range(end, start - 1, -1):
+        progress = motion_progress_for_subtask(
+            subtask,
+            frame,
+            states=states,
+            anno=anno,
+            curve=curve,
+        )
+        if progress + 1e-9 >= threshold:
+            done_frames.append(frame)
+        else:
+            break
+
+    if not done_frames:
+        done_frames = [end]
+    done_frames.reverse()
+    return [frame for frame in done_frames if 0 <= frame < num_frames]
+
+
+def select_frames_by_progress_bucket(
+    frame_progress: Sequence[tuple[int, float]],
+    bucket_size: float = 0.01,
+) -> List[int]:
+    """Pick one frame per progress bucket.
+
+    For each bucket [k * bucket_size, (k + 1) * bucket_size), keep the frame whose
+    progress is closest to the bucket center. Ties prefer the later frame.
+    """
+    if bucket_size <= 0:
+        return [frame for frame, _ in frame_progress]
+    if not frame_progress:
+        return []
+
+    buckets: Dict[int, List[tuple[int, float]]] = defaultdict(list)
+    max_bucket = max(0, int(1.0 / bucket_size) - 1)
+    for frame, progress in frame_progress:
+        if progress >= 1.0:
+            continue
+        bucket = min(max_bucket, int(progress / bucket_size))
+        buckets[bucket].append((frame, progress))
+
+    selected: List[int] = []
+    for bucket in sorted(buckets):
+        center = (bucket + 0.5) * bucket_size
+        frame, _ = min(buckets[bucket], key=lambda item: (abs(item[1] - center), -item[0]))
+        selected.append(frame)
+    return selected
+
+
+def select_undone_frame_indices(
+    start: int,
+    not_done_end: int,
+    *,
+    subtask: Mapping[str, Any],
+    states: np.ndarray | None = None,
+    anno: Mapping[str, Any] | None = None,
+    curve: SubtaskProgressCurve | None = None,
+    q2_frame_stride: int = 1,
+    q2_progress_bucket_size: float = 0.0,
+) -> List[int]:
+    """Select undone Q2 frame indices via progress buckets or frame stride."""
+    if not_done_end < start:
+        return []
+
+    all_frames = list(range(start, not_done_end + 1))
+    if q2_progress_bucket_size > 0:
+        frame_progress = [
+            (
+                frame,
+                progress_for_subtask(subtask, frame, states=states, anno=anno, curve=curve),
+            )
+            for frame in all_frames
+        ]
+        return select_frames_by_progress_bucket(frame_progress, q2_progress_bucket_size)
+    return all_frames[:: max(1, q2_frame_stride)]
 
 
 def build_subtask_progress_lookup(
