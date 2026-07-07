@@ -18,7 +18,9 @@ from .robotwin_progress import (
     episode_parquet_path,
     load_episode_states,
     progress_for_subtask,
+    q1_plan_start_index,
     select_undone_frame_indices,
+    state_prompt_values,
 )
 
 
@@ -28,13 +30,18 @@ QUERY_TOKENS = {
     "incident": "<incident_query>",
     "value": "<value_query>",
 }
+DEFAULT_DONE_VOTE_COUNT = 5
+DONE_VOTING_QUERY_TOKENS = tuple(f"<current_query_{idx}>" for idx in range(DEFAULT_DONE_VOTE_COUNT))
 
 ROBOTWIN_IGNORE_FLOAT = -100.0
 PREV_DONE_MAX_FRAMES = 8
 
 
-def robotwin_special_tokens() -> List[str]:
-    return list(QUERY_TOKENS.values())
+def robotwin_special_tokens(voting_done: bool = False, done_vote_count: int = DEFAULT_DONE_VOTE_COUNT) -> List[str]:
+    tokens = list(QUERY_TOKENS.values())
+    if voting_done:
+        tokens.extend(DONE_VOTING_QUERY_TOKENS[:done_vote_count])
+    return tokens
 
 
 def _json_dumps(value: Any) -> str:
@@ -80,7 +87,7 @@ Q1_SYSTEM_PROMPT = (
 
 Q2_SYSTEM_PROMPT = (
     "You are a robot execution status estimator. Given the global task, the completed subtasks, "
-    "the current subtask, and {observation_prompt}, predict the requested status values "
+    "the current subtask, the robot state values, and {observation_prompt}, predict the requested status values "
     "using the query tokens. Do not generate a natural-language answer."
 )
 
@@ -243,6 +250,7 @@ def _user_content(
     views: Sequence[str],
     current_goal: Optional[str] = None,
     include_query_tokens: bool = False,
+    state_values: Optional[Dict[str, float]] = None,
 ) -> List[Dict[str, Any]]:
     content = [
         {
@@ -252,6 +260,18 @@ def _user_content(
     ]
     if current_goal is not None:
         content.append({"type": "text", "text": f"Current subtask: {current_goal}\n"})
+    if state_values is not None:
+        content.append(
+            {
+                "type": "text",
+                "text": (
+                    "Robot state: the gripper values of left and right arms are currently "
+                    f"{state_values['left_gripper']:.3f} and {state_values['right_gripper']:.3f}, "
+                    "while the z values of left and right arms are "
+                    f"{state_values['left_z']:.3f} and {state_values['right_z']:.3f}, respectively.\n"
+                ),
+            }
+        )
     observation_label = "Image observation" if len(views) == 1 else "Image observations"
     content.append({"type": "text", "text": f"{observation_label}:\n"})
     for view in views:
@@ -306,6 +326,8 @@ class RobotWinSample:
     incident: float = ROBOTWIN_IGNORE_FLOAT
     progress: float = ROBOTWIN_IGNORE_FLOAT
     q2_group: str = ""
+    state_values: Optional[Dict[str, float]] = None
+    q1_done_start_frame: Optional[int] = None
 
 
 def _robotwin_repo_dirs(
@@ -438,6 +460,7 @@ def build_robotwin_samples(
         current_done: float,
         progress: float,
         q2_group: str,
+        state_values_for_frame: Optional[Dict[str, float]] = None,
     ) -> RobotWinSample:
         return RobotWinSample(
             kind="q2",
@@ -456,6 +479,7 @@ def build_robotwin_samples(
             incident=ROBOTWIN_IGNORE_FLOAT,
             progress=progress,
             q2_group=q2_group,
+            state_values=state_values_for_frame,
         )
 
     def clipped_frames(frames: Sequence[int], num_frames: int) -> List[int]:
@@ -522,6 +546,10 @@ def build_robotwin_samples(
                 if start >= num_frames:
                     continue
                 end = min(end, num_frames - 1)
+                curve = progress_lookup.get(start) if progress_lookup is not None else None
+                current_done_frames = current_done_frame_indices(
+                    st, num_frames, states=states, anno=anno, curve=curve
+                )
                 samples.append(
                     RobotWinSample(
                         kind="q1",
@@ -535,6 +563,7 @@ def build_robotwin_samples(
                         current_subtask_index=idx,
                         views=active_views,
                         image_repo_dir=image_repo_dir,
+                        q1_done_start_frame=min(current_done_frames) if current_done_frames else None,
                     )
                 )
 
@@ -578,6 +607,7 @@ def build_robotwin_samples(
                             current_done=0.0,
                             progress=progress,
                             q2_group="undone",
+                            state_values_for_frame=state_prompt_values(states, frame),
                         )
                     )
 
@@ -594,6 +624,7 @@ def build_robotwin_samples(
                             current_done=1.0,
                             progress=1.0,
                             q2_group="current_done",
+                            state_values_for_frame=state_prompt_values(states, frame),
                         )
                     )
 
@@ -611,6 +642,7 @@ def build_robotwin_samples(
                                 current_done=1.0,
                                 progress=1.0,
                                 q2_group="prev_done",
+                                state_values_for_frame=state_prompt_values(states, frame),
                             )
                         )
             episode_count += 1
@@ -637,9 +669,15 @@ def preprocess_robotwin_sample(sample: RobotWinSample, processor) -> Dict[str, t
     frame_index = _sample_frame_index(sample)
     views = sample.views
     images = _load_observation_images(sample.image_hdf5_paths, frame_index, views)
-    future = _future_subtasks(sample.subtasks, sample.current_subtask_index)
-    completed = _completed_subtasks(sample.subtasks, sample.current_subtask_index)
     if sample.kind == "q1":
+        plan_start_index = q1_plan_start_index(
+            sample.current_subtask_index,
+            frame_index,
+            len(sample.subtasks),
+            sample.q1_done_start_frame,
+        )
+        future = _future_subtasks(sample.subtasks, plan_start_index)
+        completed = _completed_subtasks(sample.subtasks, plan_start_index)
         user_content = _user_content(sample.task_goal, completed, images, views)
         messages = _messages_for_sample(_system_prompt(Q1_SYSTEM_PROMPT, views), user_content, assistant=future)
         prompt_messages = _messages_for_sample(_system_prompt(Q1_SYSTEM_PROMPT, views), user_content)
@@ -656,6 +694,7 @@ def preprocess_robotwin_sample(sample: RobotWinSample, processor) -> Dict[str, t
         prompt_len = prompt_result["input_ids"].shape[1]
         labels[:, prompt_len:] = input_ids[:, prompt_len:]
     else:
+        completed = _completed_subtasks(sample.subtasks, sample.current_subtask_index)
         current = sample.subtasks[sample.current_subtask_index]
         user_content = _user_content(
             sample.task_goal,
@@ -664,6 +703,7 @@ def preprocess_robotwin_sample(sample: RobotWinSample, processor) -> Dict[str, t
             views,
             current_goal=current["subtask_goal"],
             include_query_tokens=True,
+            state_values=sample.state_values,
         )
         messages = _messages_for_sample(_system_prompt(Q2_SYSTEM_PROMPT, views), user_content)
         full_result = processor.apply_chat_template(
@@ -724,6 +764,12 @@ class RobotWinDataset(Dataset):
         self.undone_samples = [
             sample for sample in self.q2_samples if sample.q2_group == "undone"
         ]
+        self.current_done_samples = [
+            sample for sample in self.q2_samples if sample.q2_group == "current_done"
+        ]
+        self.prev_done_samples = [
+            sample for sample in self.q2_samples if sample.q2_group == "prev_done"
+        ]
         self.done_samples = [
             sample for sample in self.q2_samples if sample.q2_group in {"current_done", "prev_done"}
         ]
@@ -731,15 +777,28 @@ class RobotWinDataset(Dataset):
             0.0,
             min(1.0, float(getattr(data_args, "robotwin_done_sample_prob", 0.4))),
         )
+        self.current_done_sample_prob = max(
+            0.0,
+            min(1.0, float(getattr(data_args, "robotwin_current_done_sample_prob", 0.6))),
+        )
+        self.q1_sample_prob = max(
+            0.0,
+            min(1.0, float(getattr(data_args, "robotwin_q1_sample_prob", 0.3))),
+        )
         if split == "train":
             random.shuffle(self.samples)
+            random.shuffle(self.q1_samples)
             random.shuffle(self.undone_samples)
+            random.shuffle(self.current_done_samples)
+            random.shuffle(self.prev_done_samples)
             random.shuffle(self.done_samples)
         print(
             f"Loaded RobotWin {split} samples: {len(self.samples)} "
             f"(q1={len(self.q1_samples)}, q2={len(self.q2_samples)}, "
-            f"undone={len(self.undone_samples)}, done={len(self.done_samples)}, "
-            f"done_prob={self.done_sample_prob})"
+            f"undone={len(self.undone_samples)}, current_done={len(self.current_done_samples)}, "
+            f"prev_done={len(self.prev_done_samples)}, "
+            f"q1_prob={self.q1_sample_prob}, done_prob={self.done_sample_prob}, "
+            f"current_done_prob={self.current_done_sample_prob})"
         )
 
     def __len__(self):
@@ -747,10 +806,28 @@ class RobotWinDataset(Dataset):
             return len(self.undone_samples) + len(self.done_samples)
         return len(self.samples)
 
+    def _sample_done(self) -> RobotWinSample:
+        if self.current_done_samples and self.prev_done_samples:
+            if random.random() < self.current_done_sample_prob:
+                return random.choice(self.current_done_samples)
+            return random.choice(self.prev_done_samples)
+        if self.current_done_samples:
+            return random.choice(self.current_done_samples)
+        if self.prev_done_samples:
+            return random.choice(self.prev_done_samples)
+        return random.choice(self.done_samples)
+
     def __getitem__(self, i) -> Dict[str, torch.Tensor]:
-        if self.split == "train" and self.undone_samples and self.done_samples:
+        if self.split == "train" and self.q1_samples and self.undone_samples and self.done_samples:
+            if random.random() < self.q1_sample_prob:
+                sample = random.choice(self.q1_samples)
+            elif random.random() < self.done_sample_prob:
+                sample = self._sample_done()
+            else:
+                sample = random.choice(self.undone_samples)
+        elif self.split == "train" and self.undone_samples and self.done_samples:
             if random.random() < self.done_sample_prob:
-                sample = random.choice(self.done_samples)
+                sample = self._sample_done()
             else:
                 sample = random.choice(self.undone_samples)
         else:
@@ -776,6 +853,7 @@ class RobotWinDataset(Dataset):
 class RobotWinDataCollator:
     tokenizer: transformers.PreTrainedTokenizer
     query_token_ids: Dict[str, int]
+    voting_done: bool = False
 
     def __call__(self, instances: Sequence[Dict]) -> Dict[str, torch.Tensor]:
         input_ids, labels, position_ids = tuple(
@@ -794,12 +872,28 @@ class RobotWinDataCollator:
         input_ids = input_ids[:, : self.tokenizer.model_max_length]
         labels = labels[:, : self.tokenizer.model_max_length]
         position_ids = position_ids[:, :, : self.tokenizer.model_max_length]
+        done_vote_indices = torch.zeros((input_ids.shape[0],), dtype=torch.long)
+        if self.voting_done:
+            current_token_id = self.query_token_ids["current"]
+            vote_token_ids = [
+                self.query_token_ids[name]
+                for name in sorted(self.query_token_ids)
+                if name.startswith("current_vote_")
+            ]
+            current_matches = input_ids.eq(current_token_id)
+            for row in range(input_ids.shape[0]):
+                found = torch.nonzero(current_matches[row], as_tuple=False).flatten()
+                if found.numel() > 0:
+                    vote_idx = random.randrange(len(vote_token_ids))
+                    done_vote_indices[row] = vote_idx
+                    input_ids[row, found[-1]] = vote_token_ids[vote_idx]
 
         batch = {
             "input_ids": input_ids,
             "labels": labels,
             "attention_mask": input_ids.ne(self.tokenizer.pad_token_id),
             "position_ids": position_ids,
+            "robotwin_done_vote_index": done_vote_indices,
         }
 
         images = [instance["pixel_values"] for instance in instances if "pixel_values" in instance]
@@ -816,8 +910,14 @@ class RobotWinDataCollator:
         batch["video_grid_thw"] = None
 
         for name, token_id in self.query_token_ids.items():
+            if name.startswith("current_vote_"):
+                continue
             positions = torch.full((input_ids.shape[0],), -1, dtype=torch.long)
             matches = input_ids.eq(token_id)
+            if self.voting_done and name == "current":
+                for vote_name, vote_token_id in self.query_token_ids.items():
+                    if vote_name.startswith("current_vote_"):
+                        matches = matches | input_ids.eq(vote_token_id)
             for row in range(input_ids.shape[0]):
                 found = torch.nonzero(matches[row], as_tuple=False).flatten()
                 if found.numel() > 0:
@@ -834,7 +934,11 @@ class RobotWinDataCollator:
 def make_robotwin_data_module(processor, data_args, query_token_ids: Dict[str, int]) -> Dict:
     train_dataset = RobotWinDataset(processor, data_args=data_args, split="train")
     eval_dataset = RobotWinDataset(processor, data_args=data_args, split="test")
-    data_collator = RobotWinDataCollator(processor.tokenizer, query_token_ids=query_token_ids)
+    data_collator = RobotWinDataCollator(
+        processor.tokenizer,
+        query_token_ids=query_token_ids,
+        voting_done=bool(getattr(data_args, "voting_done", False)),
+    )
     return {
         "train_dataset": train_dataset,
         "eval_dataset": eval_dataset if len(eval_dataset) > 0 else None,

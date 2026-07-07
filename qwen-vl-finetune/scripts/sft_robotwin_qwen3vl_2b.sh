@@ -26,7 +26,7 @@ DATA_ROOT="${DATA_ROOT:-/media/damoxing/datasets/vae4d/lerobot-vae4d-org/robotwi
 ANNO_ROOT="${ANNO_ROOT:-${DATA_ROOT}}"
 ROBOTWIN_VIEWS="${ROBOTWIN_VIEWS:-main,left_wrist,right_wrist}"
 ROBOTWIN_EXCLUDE_EPISODES="${ROBOTWIN_EXCLUDE_EPISODES:-${FINETUNE_ROOT}/scripts/curation/tests/robotwin_anno_eval_exclude_episodes.json}"
-OUTPUT_DIR="${OUTPUT_DIR:-/media/damoxing/ckp/qwen_ft/robotwin_qwen3vl_2b-f2}"
+OUTPUT_DIR="${OUTPUT_DIR:-/media/damoxing/ckp/qwen_ft/robotwin_qwen3vl_2b-f4-voting-done}"
 ROBOTWIN_INIT_CHECKPOINT="${ROBOTWIN_INIT_CHECKPOINT:-${OUTPUT_DIR}/pytorch_model.bin}"
 export ATTN_IMPLEMENTATION="${ATTN_IMPLEMENTATION:-sdpa}"
 export TENSORBOARD_LOGGING_DIR="${TENSORBOARD_LOGGING_DIR:-${OUTPUT_DIR}/tb}"
@@ -54,11 +54,13 @@ fi
   --robotwin_q2_frame_stride 1 \
   --robotwin_q2_progress_bucket_size 0.01 \
   --robotwin_boundary_extra_frames 2 \
+  --robotwin_q1_sample_prob 0.5 \
   --robotwin_done_sample_prob 0.4 \
+  --robotwin_current_done_sample_prob 0.6 \
   --output_dir "${OUTPUT_DIR}" \
   --num_train_epochs 5 \
   --per_device_train_batch_size 1 \
-  --gradient_accumulation_steps 8 \
+  --gradient_accumulation_steps 1 \
   --learning_rate 1e-5 \
   --model_max_length 4096 \
   --bf16 True \
@@ -71,4 +73,5 @@ fi
   --save_total_limit 3 \
   --report_to tensorboard \
   --logging_steps 10 \
-  "${EXTRA_ARGS[@]}"
+  "${EXTRA_ARGS[@]}" \
+  "$@"

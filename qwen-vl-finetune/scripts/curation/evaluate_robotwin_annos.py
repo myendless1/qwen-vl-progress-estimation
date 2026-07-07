@@ -116,7 +116,7 @@ def action_kind(text: str) -> str:
         return "open"
     if re.search(r"\bclose the gripper|close the grippers|partially close\b", lowered):
         return "close"
-    if re.search(r"\b(move|lift|place|return|pull|scan|rotate|shake|press|operate|click|hit|pour|open the .*door|open the .*lid)\b", lowered):
+    if re.search(r"\b(move|lift|place|return|retract|pull|scan|rotate|shake|press|operate|click|hit|pour|open the .*door|open the .*lid)\b", lowered):
         return "move"
     return "unknown"
 

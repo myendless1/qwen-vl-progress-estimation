@@ -28,6 +28,7 @@ from qwenvl.data.robotwin_progress import (
     load_episode_states,
     progress_for_subtask,
     select_undone_frame_indices,
+    state_prompt_values,
 )
 from tools.utils.robotwin_eval import write_csv, write_json
 from tools.utils.robotwin_video import build_episode_samples, save_q2_video
@@ -120,6 +121,7 @@ def q2_trajectory_entries(
                     anno=anno,
                     curve=curve,
                 ),
+                "state_values": state_prompt_values(states, frame),
             }
         )
     for frame in current_done_frames:
@@ -131,6 +133,7 @@ def q2_trajectory_entries(
                 "q2_group": "current_done",
                 "done_label": 1.0,
                 "progress_label": 1.0,
+                "state_values": state_prompt_values(states, frame),
             }
         )
     return entries
@@ -232,6 +235,7 @@ def load_episode_entries(args, ref: Dict, views: Sequence[str]) -> Optional[Dict
                         "q2_group": "prev_done",
                         "done_label": 1.0,
                         "progress_label": 1.0,
+                        "state_values": state_prompt_values(states, frame),
                     }
                 )
     if not entries:

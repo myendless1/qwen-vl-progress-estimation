@@ -22,6 +22,7 @@ from qwenvl.data.robotwin_progress import (
     episode_parquet_path,
     load_episode_states,
     progress_for_subtask,
+    state_prompt_values,
 )
 
 
@@ -126,6 +127,7 @@ def build_episode_samples(
                 current_done=done,
                 progress=progress,
                 q2_group="trajectory",
+                state_values=state_prompt_values(states, frame),
             )
         )
     return anno, samples

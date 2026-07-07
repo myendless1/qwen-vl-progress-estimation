@@ -297,6 +297,7 @@ def episode_entries_to_samples(episode: Dict, views: Sequence[str], image_repo_d
                 incident=ROBOTWIN_IGNORE_FLOAT,
                 progress=float(entry["progress_label"]),
                 q2_group=entry["q2_group"],
+                state_values=entry.get("state_values"),
             )
         )
     return samples, anno

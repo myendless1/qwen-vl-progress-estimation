@@ -24,12 +24,21 @@ GRIPPER_DIMS = {
     "left": LEFT_GRIPPER_DIM,
     "right": RIGHT_GRIPPER_DIM,
 }
+STATE_PROMPT_DIMS = {
+    "left_gripper": LEFT_GRIPPER_DIM,
+    "right_gripper": RIGHT_GRIPPER_DIM,
+    "left_z": 2,
+    "right_z": 10,
+}
 ANNOTATION_ARM_FLIP = {
     "left": "right",
     "right": "left",
 }
 MOTION_EPS = 1e-12
 DONE_PROGRESS_THRESHOLD = 0.995
+TRANSLATION_PROGRESS_MIN_TOTAL = 0.01
+ROTATION_PROGRESS_MIN_TOTAL = float(np.deg2rad(2.0))
+GRIPPER_PROGRESS_MIN_TOTAL = 0.05
 
 
 def episode_parquet_path(repo_dir: Path, episode_index: int, chunks_size: int) -> Path:
@@ -47,6 +56,16 @@ def load_episode_states(path: Path) -> np.ndarray:
 
     table = pq.read_table(path, columns=["observation.state"])
     return np.asarray(table.column("observation.state").to_pylist(), dtype=np.float32)
+
+
+def state_prompt_values(states: np.ndarray | None, frame: int) -> Dict[str, float] | None:
+    if states is None or len(states) == 0:
+        return None
+    frame = max(0, min(int(frame), len(states) - 1))
+    state = states[frame]
+    if state.shape[0] <= max(STATE_PROMPT_DIMS.values()):
+        return None
+    return {name: float(state[dim]) for name, dim in STATE_PROMPT_DIMS.items()}
 
 
 def annotation_arm_to_state_arm(anno: Mapping[str, Any], arm: str) -> str:
@@ -166,9 +185,9 @@ class SubtaskProgressCurve:
 
     def has_motion(self) -> bool:
         return (
-            self.trans_total > MOTION_EPS
-            or self.rot_total > MOTION_EPS
-            or self.grip_total > MOTION_EPS
+            self.trans_total >= TRANSLATION_PROGRESS_MIN_TOTAL
+            or self.rot_total >= ROTATION_PROGRESS_MIN_TOTAL
+            or self.grip_total >= GRIPPER_PROGRESS_MIN_TOTAL
         )
 
 
@@ -198,8 +217,8 @@ def build_subtask_progress_curve(
     return SubtaskProgressCurve(trans=trans, rot=rot, grip=grip)
 
 
-def _component_progress(value: float, total: float) -> float | None:
-    if total <= MOTION_EPS:
+def _component_progress(value: float, total: float, min_total: float = MOTION_EPS) -> float | None:
+    if total <= MOTION_EPS or total < min_total:
         return None
     return max(0.0, min(1.0, value / total))
 
@@ -207,9 +226,21 @@ def _component_progress(value: float, total: float) -> float | None:
 def progress_from_curve(curve: SubtaskProgressCurve, offset: int) -> float | None:
     offset = max(0, min(offset, len(curve.trans) - 1))
     parts = [
-        _component_progress(float(curve.trans[offset]), curve.trans_total),
-        _component_progress(float(curve.rot[offset]), curve.rot_total),
-        _component_progress(float(curve.grip[offset]), curve.grip_total),
+        _component_progress(
+            float(curve.trans[offset]),
+            curve.trans_total,
+            TRANSLATION_PROGRESS_MIN_TOTAL,
+        ),
+        _component_progress(
+            float(curve.rot[offset]),
+            curve.rot_total,
+            ROTATION_PROGRESS_MIN_TOTAL,
+        ),
+        _component_progress(
+            float(curve.grip[offset]),
+            curve.grip_total,
+            GRIPPER_PROGRESS_MIN_TOTAL,
+        ),
     ]
     active = [part for part in parts if part is not None]
     if not active:
@@ -319,6 +350,18 @@ def current_done_frame_indices(
         done_frames = [end]
     done_frames.reverse()
     return [frame for frame in done_frames if 0 <= frame < num_frames]
+
+
+def q1_plan_start_index(
+    current_subtask_index: int,
+    frame_index: int,
+    num_subtasks: int,
+    done_start_frame: int | None,
+) -> int:
+    """Return the first subtask Q1 should include in the remaining plan."""
+    if done_start_frame is not None and frame_index >= done_start_frame:
+        return min(current_subtask_index + 1, num_subtasks)
+    return current_subtask_index
 
 
 def select_frames_by_progress_bucket(

@@ -3,9 +3,11 @@ import unittest
 import numpy as np
 
 from qwenvl.data.robotwin_progress import (
+    SubtaskProgressCurve,
     build_subtask_progress_curve,
     progress_for_subtask,
     progress_from_curve,
+    q1_plan_start_index,
     select_frames_by_progress_bucket,
     select_undone_frame_indices,
     time_progress_for_subtask,
@@ -64,6 +66,16 @@ class RobotWinProgressTest(unittest.TestCase):
         anno = {"metadata": {}}
         self.assertAlmostEqual(progress_for_subtask(subtask, 3, states=states, anno=anno), 0.6)
 
+    def test_subthreshold_components_are_ignored(self):
+        curve = SubtaskProgressCurve(
+            trans=np.array([0.0, 0.005, 0.009], dtype=np.float64),
+            rot=np.array([0.0, 0.0, np.deg2rad(1.0)], dtype=np.float64),
+            grip=np.array([0.0, 0.5, 1.0], dtype=np.float64),
+        )
+
+        self.assertAlmostEqual(progress_from_curve(curve, 1), 0.5)
+        self.assertAlmostEqual(progress_from_curve(curve, 2), 1.0)
+
     def test_progress_bucket_collapses_plateau_frames(self):
         frame_progress = [
             (10, 0.061),
@@ -111,6 +123,12 @@ class RobotWinProgressTest(unittest.TestCase):
         self.assertEqual(selected, sorted(set(selected)))
         self.assertIn(0, selected)
         self.assertIn(9, selected)
+
+    def test_q1_plan_start_moves_past_current_subtask_on_done_frame(self):
+        self.assertEqual(q1_plan_start_index(1, 17, 3, 18), 1)
+        self.assertEqual(q1_plan_start_index(1, 18, 3, 18), 2)
+        self.assertEqual(q1_plan_start_index(1, 20, 3, 18), 2)
+        self.assertEqual(q1_plan_start_index(2, 30, 3, 28), 3)
 
 
 if __name__ == "__main__":

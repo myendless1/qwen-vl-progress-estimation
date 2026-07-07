@@ -15,6 +15,7 @@
 #    limitations under the License.
 
 import os
+import json
 import logging
 import pathlib
 import torch
@@ -38,6 +39,7 @@ from transformers import (
 )
 from qwenvl.data.data_processor import make_supervised_data_module
 from qwenvl.data.robotwin_processor import (
+    DONE_VOTING_QUERY_TOKENS,
     QUERY_TOKENS,
     make_robotwin_data_module,
     robotwin_special_tokens,
@@ -52,6 +54,84 @@ from qwenvl.train.robotwin_model import RobotWinQwenWrapper
 from transformers import AutoProcessor, Trainer
 
 local_rank = None
+
+
+def _pop_config_path(argv):
+    for idx, arg in enumerate(list(argv)):
+        if arg == "--config":
+            if idx + 1 >= len(argv):
+                raise ValueError("--config requires a path")
+            config_path = argv[idx + 1]
+            del argv[idx : idx + 2]
+            return config_path
+        if arg.startswith("--config="):
+            config_path = arg.split("=", 1)[1]
+            del argv[idx]
+            return config_path
+    return None
+
+
+def _read_training_config(config_path):
+    path = pathlib.Path(config_path).expanduser()
+    if not path.exists():
+        raise FileNotFoundError(f"Training config does not exist: {path}")
+    with open(path) as f:
+        config = json.load(f)
+    if not isinstance(config, dict):
+        raise ValueError(f"Training config must be a JSON object: {path}")
+    return config
+
+
+def _format_config_value(value):
+    if isinstance(value, bool):
+        return "True" if value else "False"
+    return str(value)
+
+
+def _expand_config_value(value, context):
+    if not isinstance(value, str):
+        return value
+    expanded = os.path.expandvars(value)
+    try:
+        expanded = expanded.format(**context)
+    except KeyError:
+        pass
+    return expanded
+
+
+def _config_to_args(config):
+    sections = ("model", "data", "training")
+    context = {}
+    for section in sections:
+        values = config.get(section, {})
+        if not isinstance(values, dict):
+            raise ValueError(f"Config section '{section}' must be an object")
+        context.update(values)
+
+    args = []
+    for section in sections:
+        for key, value in config.get(section, {}).items():
+            if key.endswith("_if_exists"):
+                arg_name = key[: -len("_if_exists")]
+                value = _expand_config_value(value, context)
+                if value is None or not pathlib.Path(str(value)).expanduser().exists():
+                    continue
+                key = arg_name
+            else:
+                value = _expand_config_value(value, context)
+            if value is None:
+                continue
+            args.extend([f"--{key}", _format_config_value(value)])
+    return args
+
+
+def _apply_config_argv():
+    argv = sys.argv[1:]
+    config_path = _pop_config_path(argv)
+    if not config_path:
+        return
+    config_args = _config_to_args(_read_training_config(config_path))
+    sys.argv = [sys.argv[0], *config_args, *argv]
 
 
 def rank0_print(*args):
@@ -152,8 +232,8 @@ def _tokenizer_from_processor(processor):
     return getattr(processor, "tokenizer", processor)
 
 
-def _add_robotwin_tokens(processor, tokenizer, model):
-    special_tokens = robotwin_special_tokens()
+def _add_robotwin_tokens(processor, tokenizer, model, voting_done: bool = False, done_vote_count: int = 5):
+    special_tokens = robotwin_special_tokens(voting_done=voting_done, done_vote_count=done_vote_count)
     tokenizer.add_special_tokens({"additional_special_tokens": special_tokens})
     processor_tokenizer = _tokenizer_from_processor(processor)
     if processor_tokenizer is not tokenizer:
@@ -161,10 +241,18 @@ def _add_robotwin_tokens(processor, tokenizer, model):
     if hasattr(processor, "tokenizer"):
         processor.tokenizer = tokenizer
     model.resize_token_embeddings(len(tokenizer))
-    return {
+    token_ids = {
         name: tokenizer.convert_tokens_to_ids(token)
         for name, token in QUERY_TOKENS.items()
     }
+    if voting_done:
+        token_ids.update(
+            {
+                f"current_vote_{idx}": tokenizer.convert_tokens_to_ids(token)
+                for idx, token in enumerate(DONE_VOTING_QUERY_TOKENS[:done_vote_count])
+            }
+        )
+    return token_ids
 
 
 def _enable_query_embeddings(model):
@@ -183,6 +271,27 @@ def _load_robotwin_init_checkpoint(model, checkpoint_path):
     if not path.exists():
         raise FileNotFoundError(f"RobotWin init checkpoint does not exist: {path}")
     state_dict = torch.load(path, map_location="cpu")
+    current_state = model.state_dict()
+    skipped = []
+    compatible_state = {}
+    for key, value in state_dict.items():
+        if key not in current_state:
+            compatible_state[key] = value
+            continue
+        target = current_state[key]
+        if value.shape == target.shape:
+            compatible_state[key] = value
+            continue
+        if value.ndim == target.ndim and all(src <= dst for src, dst in zip(value.shape, target.shape)):
+            merged = target.detach().clone()
+            slices = tuple(slice(0, size) for size in value.shape)
+            merged[slices] = value.to(dtype=merged.dtype)
+            compatible_state[key] = merged
+        else:
+            skipped.append((key, tuple(value.shape), tuple(target.shape)))
+    if skipped:
+        rank0_print(f"Skipped incompatible checkpoint tensors: {skipped[:20]} (total={len(skipped)})")
+    state_dict = compatible_state
     missing, unexpected = model.load_state_dict(state_dict, strict=False)
     rank0_print(
         "Loaded RobotWin init checkpoint "
@@ -232,6 +341,8 @@ def _find_last_valid_checkpoint(output_dir: str):
 def train(attn_implementation="flash_attention_2"):
     global local_rank
 
+    _apply_config_argv()
+
     if "--save_safetensors" in sys.argv:
         idx = sys.argv.index("--save_safetensors")
         del sys.argv[idx : min(idx + 2, len(sys.argv))]
@@ -245,6 +356,9 @@ def train(attn_implementation="flash_attention_2"):
     os.makedirs(training_args.output_dir, exist_ok=True)
 
     if data_args.robotwin_data_root:
+        data_args.voting_done = training_args.voting_done
+        if training_args.voting_done and training_args.ddp_find_unused_parameters is None:
+            training_args.ddp_find_unused_parameters = True
         if getattr(training_args, "save_safetensors", False):
             rank0_print(
                 "Disabling save_safetensors for RobotWin wrapper because Qwen3-VL ties "
@@ -327,7 +441,13 @@ def train(attn_implementation="flash_attention_2"):
                 anno_root=data_args.robotwin_anno_root,
             )
             rank0_print(f"Saved RobotWin split manifest to {split_path}")
-        robotwin_query_token_ids = _add_robotwin_tokens(processor, tokenizer, model)
+        robotwin_query_token_ids = _add_robotwin_tokens(
+            processor,
+            tokenizer,
+            model,
+            voting_done=training_args.voting_done,
+            done_vote_count=training_args.done_vote_count,
+        )
 
     if training_args.lora_enable:
         from peft import LoraConfig, get_peft_model, TaskType
@@ -365,6 +485,8 @@ def train(attn_implementation="flash_attention_2"):
             progress_loss_weight=training_args.robotwin_progress_loss_weight,
             replan_loss_weight=training_args.robotwin_replan_loss_weight,
             incident_loss_weight=training_args.robotwin_incident_loss_weight,
+            voting_done=training_args.voting_done,
+            done_vote_count=training_args.done_vote_count,
         )
         _load_robotwin_init_checkpoint(model, training_args.robotwin_init_checkpoint)
     

@@ -5,6 +5,7 @@ import os
 import random
 import sys
 import time
+from collections import defaultdict
 from pathlib import Path
 
 import torch
@@ -59,10 +60,30 @@ def parse_args():
     parser.add_argument("--max-samples", type=int, default=None)
     parser.add_argument("--sample-seed", type=int, default=0)
     parser.add_argument("--shuffle-samples", action="store_true")
+    parser.add_argument(
+        "--sample-manifest",
+        default=None,
+        help=(
+            "Optional JSON manifest that fixes the evaluated Q2 samples. "
+            "If the path exists, samples are loaded from it; otherwise the current sampled set is written there."
+        ),
+    )
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--dtype", choices=("bf16", "fp16", "fp32"), default="bf16")
     parser.add_argument("--attn-implementation", default=os.environ.get("ATTN_IMPLEMENTATION", "sdpa"))
     parser.add_argument("--threshold", type=float, default=0.5)
+    parser.add_argument(
+        "--voting-done",
+        action="store_true",
+        help="Use RobotWin done voting heads and aggregate done by vote count.",
+    )
+    parser.add_argument("--done-vote-count", type=int, default=5)
+    parser.add_argument(
+        "--done-vote-threshold",
+        type=int,
+        default=3,
+        help="In --voting-done mode, predict done only when at least this many heads vote done.",
+    )
     parser.add_argument("--save-videos", action="store_true")
     parser.add_argument("--video-cases", type=int, default=5)
     parser.add_argument("--video-case-seed", type=int, default=0)
@@ -73,6 +94,87 @@ def parse_args():
     parser.add_argument("--video-top-height", type=int, default=720)
     parser.add_argument("--video-curve-height", type=int, default=420)
     return parser.parse_args()
+
+
+def _sample_episode_index(sample):
+    main_path = sample.image_hdf5_paths.get("main")
+    if main_path is None:
+        return None
+    stem = Path(main_path).stem
+    if not stem.startswith("episode_"):
+        return None
+    return int(stem.split("_", 1)[1])
+
+
+def _sample_manifest_entry(sample):
+    return {
+        "repo": sample.repo_dir.name,
+        "episode_index": _sample_episode_index(sample),
+        "frame_index": int(sample.frame_index),
+        "current_subtask_index": int(sample.current_subtask_index),
+        "q2_group": str(sample.q2_group),
+    }
+
+
+def _sample_manifest_key(value):
+    return (
+        str(value["repo"]),
+        int(value["episode_index"]),
+        int(value["frame_index"]),
+        int(value["current_subtask_index"]),
+        str(value["q2_group"]),
+    )
+
+
+def load_or_write_sample_manifest(args, samples):
+    manifest_path = getattr(args, "sample_manifest", None)
+    if not manifest_path:
+        return samples, ""
+
+    path = Path(manifest_path)
+    if path.exists():
+        with open(path, "r") as f:
+            payload = json.load(f)
+        entries = payload.get("samples", payload)
+        by_key = defaultdict(list)
+        for sample in samples:
+            by_key[_sample_manifest_key(_sample_manifest_entry(sample))].append(sample)
+        selected = []
+        missing = []
+        for entry in entries:
+            key = _sample_manifest_key(entry)
+            bucket = by_key.get(key)
+            if bucket:
+                selected.append(bucket.pop(0))
+            else:
+                missing.append(entry)
+        if missing:
+            raise ValueError(
+                f"Sample manifest {path} references {len(missing)} samples that were not found. "
+                f"First missing sample: {missing[0]}"
+            )
+        return selected, str(path)
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    write_json(
+        path,
+        {
+            "data_root": args.data_root,
+            "anno_root": args.anno_root,
+            "views": args.views,
+            "split": args.split,
+            "test_ratio": args.test_ratio,
+            "split_seed": args.split_seed,
+            "q2_frame_stride": args.q2_frame_stride,
+            "q2_progress_bucket_size": args.q2_progress_bucket_size,
+            "boundary_extra_frames": args.boundary_extra_frames,
+            "max_samples": args.max_samples,
+            "sample_seed": args.sample_seed,
+            "shuffle_samples": args.shuffle_samples,
+            "samples": [_sample_manifest_entry(sample) for sample in samples],
+        },
+    )
+    return samples, str(path)
 
 
 def run_video_visualization(args, context, output_dir):
@@ -121,8 +223,13 @@ def main():
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    samples = build_samples(args, kind="q2")
-    samples = sample_items(samples, args.max_samples, seed=args.sample_seed, shuffle=args.shuffle_samples)
+    all_samples = build_samples(args, kind="q2")
+    manifest_path = Path(args.sample_manifest) if args.sample_manifest else None
+    if manifest_path is not None and manifest_path.exists():
+        samples, sample_manifest = load_or_write_sample_manifest(args, all_samples)
+    else:
+        samples = sample_items(all_samples, args.max_samples, seed=args.sample_seed, shuffle=args.shuffle_samples)
+        samples, sample_manifest = load_or_write_sample_manifest(args, samples)
     if not samples:
         raise ValueError("No Q2 samples found for the requested split/settings.")
 
@@ -146,6 +253,10 @@ def main():
             "test_ratio": args.test_ratio,
             "split_seed": args.split_seed,
             "threshold": args.threshold,
+            "voting_done": args.voting_done,
+            "done_vote_count": args.done_vote_count,
+            "done_vote_threshold": args.done_vote_threshold,
+            "sample_manifest": sample_manifest,
             "rows": rows,
         },
     )
@@ -165,6 +276,11 @@ def main():
         "q2_progress_bucket_size": args.q2_progress_bucket_size,
         "boundary_extra_frames": args.boundary_extra_frames,
         "threshold": args.threshold,
+        "voting_done": args.voting_done,
+        "done_vote_count": args.done_vote_count,
+        "done_vote_threshold": args.done_vote_threshold,
+        "total_q2_candidates": len(all_samples),
+        "sample_manifest": sample_manifest,
         "predictions_csv": str(predictions_csv),
         "predictions_json": str(predictions_json),
         "videos": video_results,

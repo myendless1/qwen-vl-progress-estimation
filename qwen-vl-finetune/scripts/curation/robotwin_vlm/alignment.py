@@ -25,9 +25,11 @@ ARM_ORIENT_DIMS = {
 PLACE_MOTION_START_THRESHOLD = 0.0005
 ORIENTATION_MOTION_START_THRESHOLD = 0.01
 OTHER_ARM_MOTION_START_THRESHOLD = 0.002
+PRESS_LIFT_Z_INCREASE_THRESHOLD = 0.0005
+PRESS_LIFT_Z_INCREASE_MIN_RUN = 2
 TINY_POST_GRIPPER_MOTION_PATH = 0.01
 POST_GRIPPER_RETREAT_TEXT = re.compile(
-    r"\b(?:lift|return)\b.+\bafter (?:releasing|pressing)\b",
+    r"\b(?:lift|return|retract)\b(?:.+\bafter (?:releasing|pressing)\b|.+above the table\b)",
     flags=re.IGNORECASE,
 )
 OPEN_CLOSE_MOTION_START_THRESHOLD = 0.0005
@@ -377,7 +379,12 @@ def pick_event(
 
 def step_uses_both_arms(step: StepSpec) -> bool:
     text = step.text.lower()
-    if "both arms" in text or "dual arms" in text or "corresponding arms" in text:
+    if (
+        "both arms" in text
+        or "dual arms" in text
+        or "corresponding arms" in text
+        or "both objects" in text
+    ):
         return True
     if "both grippers" in text or "grippers of both arms" in text:
         return True
@@ -617,6 +624,48 @@ def collect_motion_candidates(
     return output
 
 
+def find_z_increase_start_frame(
+    states: np.ndarray | None,
+    arm: str | None,
+    start_frame: int,
+    end_frame: int,
+    *,
+    threshold: float = PRESS_LIFT_Z_INCREASE_THRESHOLD,
+    min_run: int = PRESS_LIFT_Z_INCREASE_MIN_RUN,
+) -> int | None:
+    if states is None or arm not in ARM_XYZ_DIMS:
+        return None
+    z_dim = ARM_XYZ_DIMS[arm].stop - 1
+    start = max(1, min(start_frame, len(states) - 1))
+    stop = max(start, min(end_frame, len(states) - 1))
+    for frame in range(start, stop + 1):
+        last = min(stop, frame + min_run - 1)
+        if last - frame + 1 < min_run:
+            break
+        if all(
+            float(states[item, z_dim] - states[item - 1, z_dim]) > threshold
+            for item in range(frame, last + 1)
+        ):
+            return frame
+    return None
+
+
+def z_increase_candidate(
+    states: np.ndarray | None,
+    arm: str | None,
+    start_frame: int,
+    end_frame: int,
+) -> BoundaryCandidate | None:
+    frame = find_z_increase_start_frame(states, arm, start_frame, end_frame)
+    if frame is None:
+        return None
+    return BoundaryCandidate(
+        frame=frame - 1,
+        source=f"before_eef_{arm or 'unknown'}_z_increase",
+        rule="press_lift",
+    )
+
+
 def choose_boundary(candidates: list[BoundaryCandidate]) -> BoundaryCandidate | None:
     valid = [candidate for candidate in candidates if candidate.frame is not None]
     if not valid:
@@ -854,6 +903,10 @@ def assign_spans(
                         rule="other_arm_motion",
                     )
                 )
+            if "press_lift" in flags:
+                lift_candidate = z_increase_candidate(states, actor, start + 1, n_frames - 1)
+                if lift_candidate is not None:
+                    candidates.append(lift_candidate)
             boundary = choose_boundary(candidates)
 
         if boundary is not None:

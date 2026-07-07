@@ -5,8 +5,10 @@ import math
 import os
 import random
 import sys
+import zipfile
 from collections import Counter, defaultdict
 from pathlib import Path
+from xml.sax.saxutils import escape
 from types import SimpleNamespace
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
@@ -19,6 +21,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from qwenvl.data.data_processor import get_rope_index_3, update_processor_pixels
 from qwenvl.data.robotwin_processor import (
+    DONE_VOTING_QUERY_TOKENS,
     Q1_SYSTEM_PROMPT,
     QUERY_TOKENS,
     RobotWinDataCollator,
@@ -26,10 +29,12 @@ from qwenvl.data.robotwin_processor import (
     _future_subtasks,
     _load_observation_images,
     _messages_for_sample,
+    _system_prompt,
     _user_content,
     build_robotwin_samples,
     parse_robotwin_views,
     preprocess_robotwin_sample,
+    robotwin_special_tokens,
 )
 from qwenvl.train.robotwin_model import RobotWinQwenWrapper
 
@@ -60,6 +65,97 @@ def write_csv(path: Path, rows: Sequence[Dict[str, Any]]) -> None:
         writer.writerows(rows)
 
 
+def _xlsx_col_name(index: int) -> str:
+    name = ""
+    while index:
+        index, remainder = divmod(index - 1, 26)
+        name = chr(65 + remainder) + name
+    return name
+
+
+def _xlsx_cell_value(value: Any) -> str:
+    if isinstance(value, (dict, list)):
+        text = json_dumps(value)
+    elif value is None:
+        text = ""
+    else:
+        text = str(value)
+    return "".join(ch for ch in text if ch in "\t\n\r" or ord(ch) >= 32)
+
+
+def write_xlsx(path: Path, rows: Sequence[Dict[str, Any]], sheet_name: str = "results") -> None:
+    """Write a minimal XLSX workbook without requiring pandas/openpyxl."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    headers = list(rows[0].keys()) if rows else []
+
+    def cell_xml(row_index: int, col_index: int, value: Any) -> str:
+        ref = f"{_xlsx_col_name(col_index)}{row_index}"
+        text = escape(_xlsx_cell_value(value))
+        return f'<c r="{ref}" t="inlineStr"><is><t xml:space="preserve">{text}</t></is></c>'
+
+    sheet_rows = []
+    if headers:
+        sheet_rows.append(
+            '<row r="1">' + "".join(cell_xml(1, col + 1, header) for col, header in enumerate(headers)) + "</row>"
+        )
+        for row_index, row in enumerate(rows, start=2):
+            sheet_rows.append(
+                f'<row r="{row_index}">'
+                + "".join(cell_xml(row_index, col + 1, row.get(header, "")) for col, header in enumerate(headers))
+                + "</row>"
+            )
+
+    safe_sheet_name = escape(sheet_name[:31] or "results")
+    worksheet = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+        'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+        f'<sheetData>{"".join(sheet_rows)}</sheetData>'
+        "</worksheet>"
+    )
+    workbook = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+        'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+        f'<sheets><sheet name="{safe_sheet_name}" sheetId="1" r:id="rId1"/></sheets>'
+        "</workbook>"
+    )
+    content_types = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+        '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+        '<Default Extension="xml" ContentType="application/xml"/>'
+        '<Override PartName="/xl/workbook.xml" '
+        'ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
+        '<Override PartName="/xl/worksheets/sheet1.xml" '
+        'ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'
+        "</Types>"
+    )
+    root_rels = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        '<Relationship Id="rId1" '
+        'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" '
+        'Target="xl/workbook.xml"/>'
+        "</Relationships>"
+    )
+    workbook_rels = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        '<Relationship Id="rId1" '
+        'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" '
+        'Target="worksheets/sheet1.xml"/>'
+        "</Relationships>"
+    )
+
+    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("[Content_Types].xml", content_types)
+        zf.writestr("_rels/.rels", root_rels)
+        zf.writestr("xl/workbook.xml", workbook)
+        zf.writestr("xl/_rels/workbook.xml.rels", workbook_rels)
+        zf.writestr("xl/worksheets/sheet1.xml", worksheet)
+
+
 def read_csv(path: Path) -> List[Dict[str, str]]:
     with open(path, newline="") as f:
         return list(csv.DictReader(f))
@@ -83,8 +179,15 @@ def load_robotwin_tokenizer(args):
         "padding_side": "right",
         "use_fast": False,
     }
+    done_vote_count = int(getattr(args, "done_vote_count", 5))
+    special_tokens = robotwin_special_tokens(
+        voting_done=bool(getattr(args, "voting_done", False)),
+        done_vote_count=done_vote_count,
+    )
     try:
-        return AutoTokenizer.from_pretrained(args.checkpoint, **tokenizer_kwargs)
+        tokenizer = AutoTokenizer.from_pretrained(args.checkpoint, **tokenizer_kwargs)
+        tokenizer.add_special_tokens({"additional_special_tokens": special_tokens})
+        return tokenizer
     except Exception as exc:
         print(
             f"warning: failed to load tokenizer from checkpoint ({exc}); "
@@ -93,18 +196,24 @@ def load_robotwin_tokenizer(args):
         )
 
     tokenizer = AutoTokenizer.from_pretrained(args.base_model, **tokenizer_kwargs)
-    special_tokens = list(QUERY_TOKENS.values())
     config_path = Path(args.checkpoint) / "tokenizer_config.json"
     if config_path.exists():
         with open(config_path, "r") as f:
             tokenizer_config = json.load(f)
         special_tokens = tokenizer_config.get("extra_special_tokens", special_tokens)
+        if getattr(args, "voting_done", False):
+            for token in robotwin_special_tokens(voting_done=True, done_vote_count=done_vote_count):
+                if token not in special_tokens:
+                    special_tokens.append(token)
     tokenizer.add_special_tokens({"additional_special_tokens": special_tokens})
     return tokenizer
 
 
-def make_query_token_ids(tokenizer) -> Dict[str, int]:
+def make_query_token_ids(tokenizer, voting_done: bool = False, done_vote_count: int = 5) -> Dict[str, int]:
     ids = {name: tokenizer.convert_tokens_to_ids(token) for name, token in QUERY_TOKENS.items()}
+    if voting_done:
+        for idx, token in enumerate(DONE_VOTING_QUERY_TOKENS[:done_vote_count]):
+            ids[f"current_vote_{idx}"] = tokenizer.convert_tokens_to_ids(token)
     missing = [name for name, token_id in ids.items() if token_id is None or token_id < 0]
     if missing:
         raise ValueError(f"Missing RobotWin query tokens in tokenizer: {missing}")
@@ -119,12 +228,37 @@ def load_robotwin_model(args, query_token_ids: Dict[str, int]):
         dtype=dtype if args.device != "cpu" else torch.float32,
     )
     base_model.resize_token_embeddings(max(query_token_ids.values()) + 1)
-    model = RobotWinQwenWrapper(base_model)
+    model = RobotWinQwenWrapper(
+        base_model,
+        voting_done=bool(getattr(args, "voting_done", False)),
+        done_vote_count=int(getattr(args, "done_vote_count", 5)),
+    )
 
     state_path = Path(args.checkpoint) / "pytorch_model.bin"
     if not state_path.exists():
         state_path = Path(args.checkpoint)
     state_dict = torch.load(state_path, map_location="cpu")
+    current_state = model.state_dict()
+    compatible_state = {}
+    skipped = []
+    for key, value in state_dict.items():
+        if key not in current_state or value.shape == current_state[key].shape:
+            compatible_state[key] = value
+        else:
+            skipped.append((key, tuple(value.shape), tuple(current_state[key].shape)))
+    if skipped:
+        print(
+            json.dumps(
+                {
+                    "shape_mismatch_warning": {
+                        "skipped": skipped[:20],
+                        "num_skipped": len(skipped),
+                    }
+                },
+                ensure_ascii=False,
+            )
+        )
+    state_dict = compatible_state
     missing, unexpected = model.load_state_dict(state_dict, strict=False)
     if missing or unexpected:
         print(
@@ -166,7 +300,17 @@ def make_data_args(args):
 
 def load_processor_tokenizer(args, prefer_checkpoint_processor: bool = False):
     processor_source = args.checkpoint if prefer_checkpoint_processor else args.base_model
-    processor = AutoProcessor.from_pretrained(processor_source)
+    try:
+        processor = AutoProcessor.from_pretrained(processor_source)
+    except OSError as exc:
+        if not prefer_checkpoint_processor or processor_source == args.base_model:
+            raise
+        print(
+            f"warning: failed to load processor from checkpoint ({exc}); "
+            "falling back to base model processor.",
+            file=sys.stderr,
+        )
+        processor = AutoProcessor.from_pretrained(args.base_model)
     tokenizer = load_robotwin_tokenizer(args)
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token = tokenizer.eos_token
@@ -178,8 +322,16 @@ def load_processor_tokenizer(args, prefer_checkpoint_processor: bool = False):
 
 def load_eval_context(args, prefer_checkpoint_processor: bool = False) -> Dict[str, Any]:
     processor, tokenizer = load_processor_tokenizer(args, prefer_checkpoint_processor=prefer_checkpoint_processor)
-    query_token_ids = make_query_token_ids(tokenizer)
-    collator = RobotWinDataCollator(tokenizer, query_token_ids=query_token_ids)
+    query_token_ids = make_query_token_ids(
+        tokenizer,
+        voting_done=bool(getattr(args, "voting_done", False)),
+        done_vote_count=int(getattr(args, "done_vote_count", 5)),
+    )
+    collator = RobotWinDataCollator(
+        tokenizer,
+        query_token_ids=query_token_ids,
+        voting_done=bool(getattr(args, "voting_done", False)),
+    )
     model = load_robotwin_model(args, query_token_ids)
     return {
         "processor": processor,
@@ -225,6 +377,44 @@ def prepare_q2_batch(samples, processor, merge_size: int, collator):
     return collator(prepared)
 
 
+def _predict_robotwin_outputs(args, model, batch: Dict[str, Any], query_token_ids: Dict[str, int]):
+    if not getattr(args, "voting_done", False):
+        outputs = model(**batch)
+        done_probs = torch.sigmoid(outputs.robotwin_logits["current_done"]).detach().float().cpu()
+        progress_preds = outputs.robotwin_progress.detach().float().cpu()
+        return done_probs, progress_preds
+
+    vote_count = int(getattr(args, "done_vote_count", 5))
+    vote_logits = []
+    progress_preds = []
+    current_token_id = int(query_token_ids["current"])
+    for vote_idx in range(vote_count):
+        vote_token_id = int(query_token_ids[f"current_vote_{vote_idx}"])
+        vote_batch = dict(batch)
+        input_ids = batch["input_ids"].clone()
+        positions = batch["robotwin_current_query_pos"].to(input_ids.device)
+        valid = positions.ge(0)
+        if valid.any():
+            rows = torch.arange(input_ids.shape[0], device=input_ids.device)[valid]
+            cols = positions[valid]
+            input_ids[rows, cols] = vote_token_id
+        else:
+            input_ids = input_ids.masked_fill(input_ids.eq(current_token_id), vote_token_id)
+        vote_batch["input_ids"] = input_ids
+        vote_batch["robotwin_done_vote_index"] = torch.full(
+            (input_ids.shape[0],),
+            vote_idx,
+            dtype=torch.long,
+            device=input_ids.device,
+        )
+        outputs = model(**vote_batch)
+        vote_logits.append(outputs.robotwin_logits["current_done"].detach().float().cpu())
+        progress_preds.append(outputs.robotwin_progress.detach().float().cpu())
+    done_probs = torch.sigmoid(torch.stack(vote_logits, dim=1))
+    progress_preds = torch.stack(progress_preds, dim=1).mean(dim=1)
+    return done_probs, progress_preds
+
+
 def run_q2_predictions(args, samples, context: Optional[Dict[str, Any]] = None, progress_prefix: str = "Q2"):
     if context is None:
         context = load_eval_context(args)
@@ -233,21 +423,29 @@ def run_q2_predictions(args, samples, context: Optional[Dict[str, Any]] = None, 
     processor = context["processor"]
     collator = context["collator"]
     merge_size = context["merge_size"]
+    query_token_ids = context["query_token_ids"]
+    voting_done = bool(getattr(args, "voting_done", False))
+    done_vote_threshold = int(getattr(args, "done_vote_threshold", 3))
 
     with torch.inference_mode():
         for batch_start, batch_samples in batched(samples, args.batch_size):
             batch = move_to_device(prepare_q2_batch(batch_samples, processor, merge_size, collator), args.device)
             if args.device.startswith("cuda"):
                 torch.cuda.synchronize()
-            outputs = model(**batch)
+            done_probs, progress_preds = _predict_robotwin_outputs(args, model, batch, query_token_ids)
             if args.device.startswith("cuda"):
                 torch.cuda.synchronize()
 
-            done_probs = torch.sigmoid(outputs.robotwin_logits["current_done"]).detach().float().cpu()
-            progress_preds = outputs.robotwin_progress.detach().float().cpu()
             done_labels = batch["robotwin_current_done"].detach().float().cpu()
             progress_labels = batch["robotwin_progress"].detach().float().cpu()
-            done_preds = done_probs.ge(args.threshold)
+            if voting_done:
+                done_votes = done_probs.ge(args.threshold).sum(dim=1)
+                done_scalar_probs = done_probs.mean(dim=1)
+                done_preds = done_votes.ge(done_vote_threshold)
+            else:
+                done_votes = done_probs.ge(args.threshold).long()
+                done_scalar_probs = done_probs
+                done_preds = done_scalar_probs.ge(args.threshold)
             done_true = done_labels.ge(args.threshold)
             errors = progress_preds - progress_labels
 
@@ -273,9 +471,15 @@ def run_q2_predictions(args, samples, context: Optional[Dict[str, Any]] = None, 
                         "current_subtask_goal": sample.subtasks[sample.current_subtask_index]["subtask_goal"],
                         "q2_group": sample.q2_group,
                         "done_label": float(done_labels[offset].item()),
-                        "done_prob": float(done_probs[offset].item()),
+                        "done_prob": float(done_scalar_probs[offset].item()),
                         "done_pred": int(done_preds[offset].item()),
+                        "done_pred_label": "done" if done_preds[offset].item() else "undone",
                         "done_correct": int(done_preds[offset].eq(done_true[offset]).item()),
+                        "done_vote_count": int(done_votes[offset].item()),
+                        "done_vote_threshold": done_vote_threshold if voting_done else "",
+                        "done_vote_probs": json_dumps([float(x) for x in done_probs[offset].tolist()])
+                        if voting_done
+                        else "",
                         "progress_label": float(progress_labels[offset].item()),
                         "progress_pred": float(progress_preds[offset].item()),
                         "progress_abs_err": abs(float(errors[offset].item())),
@@ -374,11 +578,18 @@ def parse_json_or_none(text: str):
         return None
 
 
+def task_slug_from_repo_name(repo_name: str) -> str:
+    marker = "-aloha-"
+    if marker in repo_name:
+        return repo_name.split(marker, 1)[0]
+    return repo_name.split("-", 1)[0]
+
+
 def prepare_q1_prompt(sample, processor):
     images = _load_observation_images(sample.image_hdf5_paths, sample.frame_index, sample.views)
     completed = _completed_subtasks(sample.subtasks, sample.current_subtask_index)
-    user_content = _user_content(sample.task_goal, completed, images)
-    messages = _messages_for_sample(Q1_SYSTEM_PROMPT, user_content)
+    user_content = _user_content(sample.task_goal, completed, images, sample.views)
+    messages = _messages_for_sample(_system_prompt(Q1_SYSTEM_PROMPT, sample.views), user_content)
     return processor.apply_chat_template(
         messages,
         tokenize=True,
@@ -396,6 +607,24 @@ def select_q1_samples(samples, all_states: bool = False, current_subtask_index: 
     if all_states:
         return samples
     return [sample for sample in samples if sample.current_subtask_index == current_subtask_index]
+
+
+def select_one_q1_sample_per_task(samples, max_tasks: Optional[int], seed: int, shuffle_tasks: bool = False):
+    grouped = defaultdict(list)
+    for sample in samples:
+        grouped[task_slug_from_repo_name(sample.repo_dir.name)].append(sample)
+
+    rng = random.Random(seed)
+    selected = []
+    for task_slug in sorted(grouped):
+        choices = grouped[task_slug]
+        selected.append(rng.choice(choices))
+
+    if shuffle_tasks:
+        rng.shuffle(selected)
+    if max_tasks is not None:
+        selected = selected[:max_tasks]
+    return selected
 
 
 def sample_items(items: Sequence[Any], max_items: Optional[int], seed: int, shuffle: bool = False):

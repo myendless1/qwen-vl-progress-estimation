@@ -150,6 +150,23 @@ class AlignmentTests(unittest.TestCase):
         self.assertEqual(spans[0]["end_frame"], 7)
         self.assertEqual(spans[0]["boundary_source"], "episode_end")
 
+    def test_press_lift_ends_when_pressing_arm_z_increases(self) -> None:
+        if not hasattr(numpy, "zeros"):
+            self.skipTest("numpy is not available")
+        states = numpy.zeros((8, 16), dtype=float)
+        states[:, 2] = [0.4, 0.3, 0.2, 0.05, 0.1, 0.2, 0.3, 0.4]
+        steps = [
+            StepSpec("Press the button with the left arm.", "press", "left", terminates_on=("press_lift",)),
+            StepSpec("Lift up the left arm after pressing.", "move", "left"),
+        ]
+        spans = assign_spans(steps, [], 8, states=states)
+        self.assertEqual(len(spans), 2)
+        self.assertEqual(spans[0]["end_frame"], 3)
+        self.assertEqual(spans[0]["boundary_source"], "before_eef_left_z_increase")
+        self.assertEqual(spans[0]["truncation_rule"], "press_lift")
+        self.assertEqual(spans[1]["subtask_goal"], "Lift up the left arm after pressing.")
+        self.assertEqual(spans[1]["start_frame"], 4)
+
     def test_dual_move_ends_when_next_arm_starts_independent_motion(self) -> None:
         if not hasattr(numpy, "zeros"):
             self.skipTest("numpy is not available")
@@ -163,7 +180,10 @@ class AlignmentTests(unittest.TestCase):
         states[26:, 8] = numpy.linspace(0.0, 0.1, 14)
         steps = [
             StepSpec("Close the grippers of both arms.", "close"),
-            StepSpec("Lift both objects to the middle position.", "move"),
+            StepSpec(
+                "Lift both objects to about 10 cm above the table with both arms.",
+                "move",
+            ),
             StepSpec("Move the right arm to the place pose.", "move", "right"),
             StepSpec("Open the gripper of the right arm.", "open", "right"),
         ]
@@ -180,7 +200,10 @@ class AlignmentTests(unittest.TestCase):
         self.assertEqual(spans[1]["subtask_type"], "dual_move")
         self.assertEqual(spans[1]["boundary_source"], "before_eef_right_motion")
         self.assertEqual(spans[1]["truncation_rule"], "other_arm_motion")
-        self.assertEqual(spans[1]["subtask_goal"], "Lift both objects to the middle position.")
+        self.assertEqual(
+            spans[1]["subtask_goal"],
+            "Lift both objects to about 10 cm above the table with both arms.",
+        )
         self.assertEqual(spans[2]["subtask_type"], "move")
         self.assertEqual(spans[2]["boundary_source"], "before_gripper_right_open")
         self.assertEqual(spans[2]["subtask_goal"], "Move the right arm to the place pose.")
@@ -334,7 +357,7 @@ class AlignmentTests(unittest.TestCase):
             },
             {
                 "subtask_index": 8,
-                "subtask_goal": "Lift the left arm after releasing the bread.",
+                "subtask_goal": "Retract the left arm to at least 15 cm above the table after releasing the bread.",
                 "subtask_type": "move",
                 "start_frame": 222,
                 "end_frame": 226,

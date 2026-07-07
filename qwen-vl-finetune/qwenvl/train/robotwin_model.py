@@ -55,11 +55,20 @@ class RobotWinQwenWrapper(nn.Module):
         progress_loss_weight: float = 1.0,
         replan_loss_weight: float = 0.0,
         incident_loss_weight: float = 0.0,
+        voting_done: bool = False,
+        done_vote_count: int = 5,
     ):
         super().__init__()
         self.base_model = base_model
         hidden_size = _hidden_size_from_config(base_model.config)
-        self.current_head = RobotWinRegressionHead(hidden_size)
+        self.voting_done = voting_done
+        self.done_vote_count = done_vote_count
+        if voting_done:
+            self.current_heads = nn.ModuleList(
+                RobotWinRegressionHead(hidden_size) for _ in range(done_vote_count)
+            )
+        else:
+            self.current_head = RobotWinRegressionHead(hidden_size)
         self.plan_head = RobotWinRegressionHead(hidden_size)
         self.incident_head = RobotWinRegressionHead(hidden_size)
         self.value_head = RobotWinRegressionHead(hidden_size)
@@ -115,6 +124,24 @@ class RobotWinQwenWrapper(nn.Module):
         preds = torch.sigmoid(values[valid])
         return self.progress_loss(preds, labels[valid]).mean()
 
+    def _done_logits(
+        self,
+        hidden_states: torch.Tensor,
+        vote_indices: Optional[torch.Tensor],
+    ) -> torch.Tensor:
+        if not self.voting_done:
+            return self.current_head(hidden_states)
+        if vote_indices is None:
+            vote_indices = torch.zeros(hidden_states.shape[0], device=hidden_states.device, dtype=torch.long)
+        vote_indices = vote_indices.to(hidden_states.device, dtype=torch.long).clamp(0, self.done_vote_count - 1)
+        head_dtype = next(self.current_heads[0].parameters()).dtype
+        logits = torch.zeros(hidden_states.shape[0], device=hidden_states.device, dtype=head_dtype)
+        for idx, head in enumerate(self.current_heads):
+            selected = vote_indices.eq(idx)
+            if selected.any():
+                logits[selected] = head(hidden_states[selected]).to(logits.dtype)
+        return logits
+
     def forward(
         self,
         input_ids: Optional[torch.Tensor] = None,
@@ -126,6 +153,7 @@ class RobotWinQwenWrapper(nn.Module):
         robotwin_incident_query_pos: Optional[torch.Tensor] = None,
         robotwin_value_query_pos: Optional[torch.Tensor] = None,
         robotwin_current_done: Optional[torch.Tensor] = None,
+        robotwin_done_vote_index: Optional[torch.Tensor] = None,
         robotwin_need_replan: Optional[torch.Tensor] = None,
         robotwin_incident: Optional[torch.Tensor] = None,
         robotwin_progress: Optional[torch.Tensor] = None,
@@ -155,7 +183,7 @@ class RobotWinQwenWrapper(nn.Module):
             incident_h, incident_valid = self._gather_query_hidden(last_hidden, robotwin_incident_query_pos)
             value_h, value_valid = self._gather_query_hidden(last_hidden, robotwin_value_query_pos)
 
-            current_logits = self.current_head(current_h)
+            current_logits = self._done_logits(current_h, robotwin_done_vote_index)
             plan_logits = self.plan_head(plan_h)
             incident_logits = self.incident_head(incident_h)
             value_logits = self.value_head(value_h)

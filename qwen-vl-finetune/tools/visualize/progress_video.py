@@ -26,6 +26,9 @@ from qwenvl.data.robotwin_processor import (  # noqa: E402
     parse_robotwin_views,
 )
 from qwenvl.data.robotwin_progress import (  # noqa: E402
+    GRIPPER_PROGRESS_MIN_TOTAL,
+    ROTATION_PROGRESS_MIN_TOTAL,
+    TRANSLATION_PROGRESS_MIN_TOTAL,
     _component_progress,
     build_subtask_progress_lookup,
     current_done_frame_indices,
@@ -84,7 +87,8 @@ def build_progress_rows(
     for frame in range(0, num_frames, max(1, stride)):
         subtask_index = subtask_index_for_frame(subtasks, frame)
         current = subtasks[subtask_index]
-        curve = progress_lookup.get(int(current["start_frame"])) if progress_lookup is not None else None
+        start = int(current["start_frame"])
+        curve = progress_lookup.get(start) if progress_lookup is not None else None
         done_frames = set(
             current_done_frame_indices(
                 current,
@@ -95,7 +99,6 @@ def build_progress_rows(
             )
         )
         done = 1.0 if frame in done_frames else 0.0
-        curve = progress_lookup.get(start) if progress_lookup is not None else None
         motion_progress = 1.0 if done else progress_for_subtask(
             current,
             frame,
@@ -106,13 +109,19 @@ def build_progress_rows(
         time_progress = time_progress_for_subtask(current, frame)
         offset = max(0, min(frame - start, len(curve.trans) - 1)) if curve is not None else 0
         trans_progress = (
-            _component_progress(float(curve.trans[offset]), curve.trans_total) if curve is not None else None
+            _component_progress(float(curve.trans[offset]), curve.trans_total, TRANSLATION_PROGRESS_MIN_TOTAL)
+            if curve is not None
+            else None
         )
         rot_progress = (
-            _component_progress(float(curve.rot[offset]), curve.rot_total) if curve is not None else None
+            _component_progress(float(curve.rot[offset]), curve.rot_total, ROTATION_PROGRESS_MIN_TOTAL)
+            if curve is not None
+            else None
         )
         grip_progress = (
-            _component_progress(float(curve.grip[offset]), curve.grip_total) if curve is not None else None
+            _component_progress(float(curve.grip[offset]), curve.grip_total, GRIPPER_PROGRESS_MIN_TOTAL)
+            if curve is not None
+            else None
         )
         rows.append(
             {

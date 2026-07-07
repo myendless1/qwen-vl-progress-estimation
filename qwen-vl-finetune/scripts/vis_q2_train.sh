@@ -4,12 +4,12 @@ set -euo pipefail
 source /media/damoxing/fileset/conda/bin/activate qwen3-vl-ft-min
 cd /media/damoxing/fileset/Qwen3-VL
 
-CHECKPOINT="${CHECKPOINT:-/media/damoxing/ckp/qwen_ft/robotwin_qwen3vl_2b-f2/checkpoint-6000}"
+CHECKPOINT="${CHECKPOINT:-/media/damoxing/ckp/qwen_ft/robotwin_qwen3vl_2b-f3/checkpoint-34000}"
 BASE_MODEL="${BASE_MODEL:-/media/damoxing/ckp/qwen_ft/Qwen3-VL-2B-Instruct}"
 DATA_ROOT="${DATA_ROOT:-/media/damoxing/datasets/vae4d/lerobot-vae4d-org/robotwin_gt_depth}"
 ANNO_ROOT="${ANNO_ROOT:-${DATA_ROOT}}"
 VIEWS="${VIEWS:-main,left_wrist,right_wrist}"
-OUTPUT_DIR="${OUTPUT_DIR:-/media/damoxing/ckp/qwen_ft/robotwin_qwen3vl_2b-f2/q2_train_vis}"
+OUTPUT_DIR="${OUTPUT_DIR:-/media/damoxing/ckp/qwen_ft/robotwin_qwen3vl_2b-f3/q2_train_vis-34000}"
 NUM_TASKS="${NUM_TASKS:-15}"
 SEED="${SEED:-0}"
 BATCH_SIZE="${BATCH_SIZE:-4}"

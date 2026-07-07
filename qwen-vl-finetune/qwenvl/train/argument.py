@@ -60,6 +60,18 @@ class DataArguments:
         default=0.4,
         metadata={"help": "Probability of sampling RobotWin Q2 done examples during training."},
     )
+    robotwin_current_done_sample_prob: float = field(
+        default=0.6,
+        metadata={
+            "help": "Within RobotWin Q2 done examples, probability of sampling current_done rather than prev_done."
+        },
+    )
+    robotwin_q1_sample_prob: float = field(
+        default=0.3,
+        metadata={
+            "help": "Probability of sampling RobotWin Q1 planning examples during training; remaining samples use Q2 sampling."
+        },
+    )
     robotwin_exclude_episodes: Optional[str] = field(
         default=None,
         metadata={
@@ -103,6 +115,16 @@ class TrainingArguments(transformers.TrainingArguments):
     robotwin_replan_loss_weight: float = field(default=0.0)
     robotwin_incident_loss_weight: float = field(default=0.0)
     robotwin_train_query_embeddings: bool = field(default=True)
+    voting_done: bool = field(
+        default=False,
+        metadata={
+            "help": "Use independent RobotWin done query tokens and done heads, sampling one per training batch."
+        },
+    )
+    done_vote_count: int = field(
+        default=5,
+        metadata={"help": "Number of RobotWin done voting heads used when voting_done is enabled."},
+    )
     robotwin_init_checkpoint: Optional[str] = field(
         default=None,
         metadata={"help": "Optional RobotWin wrapper checkpoint (.bin or directory) to initialize from before training."},
