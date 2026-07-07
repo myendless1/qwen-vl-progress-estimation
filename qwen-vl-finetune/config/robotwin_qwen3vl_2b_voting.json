@@ -1,0 +1,39 @@
+{
+  "model": {
+    "model_name_or_path": "/media/damoxing/ckp/qwen_ft/Qwen3-VL-2B-Instruct",
+    "tune_mm_llm": true,
+    "tune_mm_mlp": false,
+    "tune_mm_vision": false
+  },
+  "data": {
+    "robotwin_data_root": "/media/damoxing/datasets/vae4d/lerobot-vae4d-org/robotwin_gt_depth",
+    "robotwin_anno_root": "/media/damoxing/datasets/vae4d/lerobot-vae4d-org/robotwin_gt_depth",
+    "robotwin_views": "main,left_wrist,right_wrist",
+    "robotwin_test_ratio": 0.05,
+    "robotwin_q2_frame_stride": 1,
+    "robotwin_q2_progress_bucket_size": 0.01,
+    "robotwin_boundary_extra_frames": 2,
+    "robotwin_q1_sample_prob": 0.5,
+    "robotwin_done_sample_prob": 0.4,
+    "robotwin_current_done_sample_prob": 0.6,
+    "robotwin_exclude_episodes_if_exists": "/media/damoxing/fileset/Qwen3-VL/qwen-vl-finetune/scripts/curation/tests/robotwin_anno_eval_exclude_episodes.json"
+  },
+  "training": {
+    "output_dir": "/media/damoxing/ckp/qwen_ft/robotwin_qwen3vl_2b-voting-done",
+    "robotwin_init_checkpoint_if_exists": "{output_dir}/pytorch_model.bin",
+    "num_train_epochs": 5,
+    "per_device_train_batch_size": 16,
+    "gradient_accumulation_steps": 1,
+    "learning_rate": 1e-5,
+    "model_max_length": 4096,
+    "bf16": true,
+    "gradient_checkpointing": true,
+    "voting_done": true,
+    "done_vote_count": 5,
+    "save_strategy": "steps",
+    "save_steps": 2000,
+    "save_total_limit": 3,
+    "report_to": "tensorboard",
+    "logging_steps": 10
+  }
+}
