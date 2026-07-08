@@ -44,6 +44,42 @@ def robotwin_special_tokens(voting_done: bool = False, done_vote_count: int = DE
     return tokens
 
 
+def build_robotwin_query_attention_mask(
+    input_ids: torch.Tensor,
+    pad_token_id: int,
+    query_token_ids: Dict[str, int],
+    dtype: torch.dtype = torch.float32,
+) -> torch.Tensor:
+    """Build a causal mask where RobotWin query tokens are independent probes.
+
+    Every token keeps normal causal visibility except query-token keys are hidden
+    from all other positions. A query token can attend to previous non-query
+    tokens and to itself, but not to other query tokens.
+    """
+    if input_ids.ndim != 2:
+        raise ValueError(f"Expected input_ids with shape [batch, seq], got {tuple(input_ids.shape)}")
+
+    device = input_ids.device
+    batch_size, seq_len = input_ids.shape
+    valid_tokens = input_ids.ne(pad_token_id)
+    causal = torch.ones((seq_len, seq_len), device=device, dtype=torch.bool).tril()
+    allowed = causal.unsqueeze(0).expand(batch_size, -1, -1).clone()
+    allowed &= valid_tokens[:, None, :]
+    allowed &= valid_tokens[:, :, None]
+
+    query_ids = [int(token_id) for token_id in query_token_ids.values() if token_id is not None and token_id >= 0]
+    if query_ids:
+        query_tokens = torch.zeros_like(input_ids, dtype=torch.bool)
+        for token_id in query_ids:
+            query_tokens |= input_ids.eq(token_id)
+        same_position = torch.eye(seq_len, device=device, dtype=torch.bool).unsqueeze(0)
+        query_keys = query_tokens[:, None, :]
+        allowed &= (~query_keys) | same_position
+
+    mask = torch.zeros((batch_size, 1, seq_len, seq_len), device=device, dtype=dtype)
+    return mask.masked_fill(~allowed.unsqueeze(1), torch.finfo(dtype).min)
+
+
 def _json_dumps(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 
@@ -854,6 +890,7 @@ class RobotWinDataCollator:
     tokenizer: transformers.PreTrainedTokenizer
     query_token_ids: Dict[str, int]
     voting_done: bool = False
+    all_done_votes: bool = False
 
     def __call__(self, instances: Sequence[Dict]) -> Dict[str, torch.Tensor]:
         input_ids, labels, position_ids = tuple(
@@ -873,7 +910,7 @@ class RobotWinDataCollator:
         labels = labels[:, : self.tokenizer.model_max_length]
         position_ids = position_ids[:, :, : self.tokenizer.model_max_length]
         done_vote_indices = torch.zeros((input_ids.shape[0],), dtype=torch.long)
-        if self.voting_done:
+        if self.voting_done and not self.all_done_votes:
             current_token_id = self.query_token_ids["current"]
             vote_token_ids = [
                 self.query_token_ids[name]
@@ -891,7 +928,11 @@ class RobotWinDataCollator:
         batch = {
             "input_ids": input_ids,
             "labels": labels,
-            "attention_mask": input_ids.ne(self.tokenizer.pad_token_id),
+            "attention_mask": build_robotwin_query_attention_mask(
+                input_ids,
+                self.tokenizer.pad_token_id,
+                self.query_token_ids,
+            ),
             "position_ids": position_ids,
             "robotwin_done_vote_index": done_vote_indices,
         }
@@ -923,6 +964,17 @@ class RobotWinDataCollator:
                 if found.numel() > 0:
                     positions[row] = found[-1]
             batch[f"robotwin_{name}_query_pos"] = positions
+
+        if self.voting_done:
+            vote_names = sorted(name for name in self.query_token_ids if name.startswith("current_vote_"))
+            vote_positions = torch.full((input_ids.shape[0], len(vote_names)), -1, dtype=torch.long)
+            for vote_idx, vote_name in enumerate(vote_names):
+                matches = input_ids.eq(self.query_token_ids[vote_name])
+                for row in range(input_ids.shape[0]):
+                    found = torch.nonzero(matches[row], as_tuple=False).flatten()
+                    if found.numel() > 0:
+                        vote_positions[row, vote_idx] = found[-1]
+            batch["robotwin_current_vote_query_pos"] = vote_positions
 
         batch["robotwin_current_done"] = torch.stack([i["robotwin_current_done"] for i in instances])
         batch["robotwin_need_replan"] = torch.stack([i["robotwin_need_replan"] for i in instances])

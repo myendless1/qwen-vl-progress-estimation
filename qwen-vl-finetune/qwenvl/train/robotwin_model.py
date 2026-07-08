@@ -142,6 +142,29 @@ class RobotWinQwenWrapper(nn.Module):
                 logits[selected] = head(hidden_states[selected]).to(logits.dtype)
         return logits
 
+    def _done_vote_logits(
+        self,
+        hidden_states: torch.Tensor,
+        vote_positions: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        vote_positions = vote_positions.to(hidden_states.device, dtype=torch.long)
+        valid = vote_positions.ge(0)
+        safe_positions = vote_positions.clamp(min=0)
+        batch_idx = torch.arange(hidden_states.shape[0], device=hidden_states.device)[:, None]
+        vote_hidden = hidden_states[batch_idx, safe_positions]
+        head_dtype = next(self.current_heads[0].parameters()).dtype
+        logits = torch.zeros(
+            hidden_states.shape[0],
+            vote_positions.shape[1],
+            device=hidden_states.device,
+            dtype=head_dtype,
+        )
+        for idx, head in enumerate(self.current_heads[: vote_positions.shape[1]]):
+            selected = valid[:, idx]
+            if selected.any():
+                logits[selected, idx] = head(vote_hidden[selected, idx]).to(logits.dtype)
+        return logits, valid
+
     def forward(
         self,
         input_ids: Optional[torch.Tensor] = None,
@@ -152,6 +175,7 @@ class RobotWinQwenWrapper(nn.Module):
         robotwin_plan_query_pos: Optional[torch.Tensor] = None,
         robotwin_incident_query_pos: Optional[torch.Tensor] = None,
         robotwin_value_query_pos: Optional[torch.Tensor] = None,
+        robotwin_current_vote_query_pos: Optional[torch.Tensor] = None,
         robotwin_current_done: Optional[torch.Tensor] = None,
         robotwin_done_vote_index: Optional[torch.Tensor] = None,
         robotwin_need_replan: Optional[torch.Tensor] = None,
@@ -162,6 +186,12 @@ class RobotWinQwenWrapper(nn.Module):
         lm_labels = labels
         if labels is not None and not labels.ne(-100).any():
             lm_labels = None
+        if attention_mask is not None and attention_mask.ndim == 4:
+            param = next(self.base_model.parameters(), None)
+            target_dtype = param.dtype if param is not None and param.is_floating_point() else torch.float32
+            blocked = attention_mask.lt(0)
+            attention_mask = torch.zeros_like(attention_mask, device=input_ids.device, dtype=target_dtype)
+            attention_mask = attention_mask.masked_fill(blocked.to(input_ids.device), torch.finfo(target_dtype).min)
 
         outputs = self.base_model(
             input_ids=input_ids,
@@ -183,7 +213,10 @@ class RobotWinQwenWrapper(nn.Module):
             incident_h, incident_valid = self._gather_query_hidden(last_hidden, robotwin_incident_query_pos)
             value_h, value_valid = self._gather_query_hidden(last_hidden, robotwin_value_query_pos)
 
-            current_logits = self._done_logits(current_h, robotwin_done_vote_index)
+            if self.voting_done and robotwin_current_vote_query_pos is not None:
+                current_logits, current_valid = self._done_vote_logits(last_hidden, robotwin_current_vote_query_pos)
+            else:
+                current_logits = self._done_logits(current_h, robotwin_done_vote_index)
             plan_logits = self.plan_head(plan_h)
             incident_logits = self.incident_head(incident_h)
             value_logits = self.value_head(value_h)
@@ -195,9 +228,10 @@ class RobotWinQwenWrapper(nn.Module):
                 "progress_raw": value_logits,
             }
 
-            loss = loss + self.done_loss_weight * self._masked_bce(
-                current_logits, robotwin_current_done, current_valid
-            )
+            current_done_labels = robotwin_current_done
+            if current_logits.ndim == 2 and robotwin_current_done is not None and robotwin_current_done.ndim == 1:
+                current_done_labels = robotwin_current_done[:, None].expand_as(current_logits)
+            loss = loss + self.done_loss_weight * self._masked_bce(current_logits, current_done_labels, current_valid)
             loss = loss + self.replan_loss_weight * self._masked_bce(
                 plan_logits, robotwin_need_replan, plan_valid
             )
