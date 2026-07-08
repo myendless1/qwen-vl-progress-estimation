@@ -331,6 +331,7 @@ def load_eval_context(args, prefer_checkpoint_processor: bool = False) -> Dict[s
         tokenizer,
         query_token_ids=query_token_ids,
         voting_done=bool(getattr(args, "voting_done", False)),
+        all_done_votes=bool(getattr(args, "voting_done", False)),
     )
     model = load_robotwin_model(args, query_token_ids)
     return {
@@ -341,6 +342,31 @@ def load_eval_context(args, prefer_checkpoint_processor: bool = False) -> Dict[s
         "collator": collator,
         "model": model,
     }
+
+
+def _expand_current_query_to_vote_tokens(item: Dict[str, Any], query_token_ids: Dict[str, int]) -> Dict[str, Any]:
+    vote_token_ids = [
+        int(query_token_ids[name])
+        for name in sorted(query_token_ids)
+        if name.startswith("current_vote_")
+    ]
+    if not vote_token_ids:
+        return item
+
+    current_token_id = int(query_token_ids["current"])
+    input_ids = item["input_ids"]
+    labels = item["labels"]
+    matches = torch.nonzero(input_ids[0].eq(current_token_id), as_tuple=False).flatten()
+    if matches.numel() == 0:
+        return item
+
+    pos = int(matches[-1].item())
+    vote_tokens = torch.tensor([vote_token_ids], dtype=input_ids.dtype, device=input_ids.device)
+    vote_labels = torch.full((1, len(vote_token_ids)), -100, dtype=labels.dtype, device=labels.device)
+    item = dict(item)
+    item["input_ids"] = torch.cat([input_ids[:, :pos], vote_tokens, input_ids[:, pos + 1 :]], dim=1)
+    item["labels"] = torch.cat([labels[:, :pos], vote_labels, labels[:, pos + 1 :]], dim=1)
+    return item
 
 
 def build_samples(args, kind: Optional[str] = None):
@@ -364,6 +390,8 @@ def prepare_q2_batch(samples, processor, merge_size: int, collator):
     prepared = []
     for sample in samples:
         item = preprocess_robotwin_sample(sample, processor)
+        if getattr(collator, "voting_done", False) and getattr(collator, "all_done_votes", False):
+            item = _expand_current_query_to_vote_tokens(item, collator.query_token_ids)
         grid_thw = item.get("image_grid_thw")
         if grid_thw is not None and not isinstance(grid_thw, (list, tuple)):
             grid_thw = [grid_thw]
@@ -384,34 +412,12 @@ def _predict_robotwin_outputs(args, model, batch: Dict[str, Any], query_token_id
         progress_preds = outputs.robotwin_progress.detach().float().cpu()
         return done_probs, progress_preds
 
-    vote_count = int(getattr(args, "done_vote_count", 5))
-    vote_logits = []
-    progress_preds = []
-    current_token_id = int(query_token_ids["current"])
-    for vote_idx in range(vote_count):
-        vote_token_id = int(query_token_ids[f"current_vote_{vote_idx}"])
-        vote_batch = dict(batch)
-        input_ids = batch["input_ids"].clone()
-        positions = batch["robotwin_current_query_pos"].to(input_ids.device)
-        valid = positions.ge(0)
-        if valid.any():
-            rows = torch.arange(input_ids.shape[0], device=input_ids.device)[valid]
-            cols = positions[valid]
-            input_ids[rows, cols] = vote_token_id
-        else:
-            input_ids = input_ids.masked_fill(input_ids.eq(current_token_id), vote_token_id)
-        vote_batch["input_ids"] = input_ids
-        vote_batch["robotwin_done_vote_index"] = torch.full(
-            (input_ids.shape[0],),
-            vote_idx,
-            dtype=torch.long,
-            device=input_ids.device,
-        )
-        outputs = model(**vote_batch)
-        vote_logits.append(outputs.robotwin_logits["current_done"].detach().float().cpu())
-        progress_preds.append(outputs.robotwin_progress.detach().float().cpu())
-    done_probs = torch.sigmoid(torch.stack(vote_logits, dim=1))
-    progress_preds = torch.stack(progress_preds, dim=1).mean(dim=1)
+    outputs = model(**batch)
+    done_logits = outputs.robotwin_logits["current_done"].detach().float().cpu()
+    if done_logits.ndim == 1:
+        done_logits = done_logits[:, None]
+    done_probs = torch.sigmoid(done_logits)
+    progress_preds = outputs.robotwin_progress.detach().float().cpu()
     return done_probs, progress_preds
 
 
@@ -442,10 +448,12 @@ def run_q2_predictions(args, samples, context: Optional[Dict[str, Any]] = None, 
                 done_votes = done_probs.ge(args.threshold).sum(dim=1)
                 done_scalar_probs = done_probs.mean(dim=1)
                 done_preds = done_votes.ge(done_vote_threshold)
+                vote_total = done_probs.shape[1]
             else:
                 done_votes = done_probs.ge(args.threshold).long()
                 done_scalar_probs = done_probs
                 done_preds = done_scalar_probs.ge(args.threshold)
+                vote_total = 1
             done_true = done_labels.ge(args.threshold)
             errors = progress_preds - progress_labels
 
@@ -476,6 +484,11 @@ def run_q2_predictions(args, samples, context: Optional[Dict[str, Any]] = None, 
                         "done_pred_label": "done" if done_preds[offset].item() else "undone",
                         "done_correct": int(done_preds[offset].eq(done_true[offset]).item()),
                         "done_vote_count": int(done_votes[offset].item()),
+                        "done_vote_pattern": (
+                            f"{int(done_votes[offset].item())}:{int(vote_total - done_votes[offset].item())}"
+                            if voting_done
+                            else ""
+                        ),
                         "done_vote_threshold": done_vote_threshold if voting_done else "",
                         "done_vote_probs": json_dumps([float(x) for x in done_probs[offset].tolist()])
                         if voting_done
@@ -503,6 +516,7 @@ def summarize_q2(rows: Sequence[Dict[str, Any]], threshold: float = 0.5) -> Dict
     total = len(rows)
     confusion = Counter()
     by_group = defaultdict(Counter)
+    vote_patterns = Counter()
     sqerr = 0.0
     abserr = 0.0
     max_abs = 0.0
@@ -520,6 +534,8 @@ def summarize_q2(rows: Sequence[Dict[str, Any]], threshold: float = 0.5) -> Dict
             key = "FN"
         confusion[key] += 1
         by_group[row.get("q2_group") or "unknown"][key] += 1
+        if row.get("done_vote_pattern"):
+            vote_patterns[row["done_vote_pattern"]] += 1
         err = safe_float(row, "progress_pred") - safe_float(row, "progress_label")
         sqerr += err * err
         abserr += abs(err)
@@ -545,6 +561,7 @@ def summarize_q2(rows: Sequence[Dict[str, Any]], threshold: float = 0.5) -> Dict
             },
         },
         "done_accuracy": (confusion["TP"] + confusion["TN"]) / max(1, total),
+        "done_vote_pattern_distribution": dict(sorted(vote_patterns.items())),
         "progress_mse": mse,
         "progress_rmse": math.sqrt(mse),
         "progress_mae": abserr / max(1, total),

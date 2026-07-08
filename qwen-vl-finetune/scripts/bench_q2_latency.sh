@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Evaluate RobotWin Q1 from a JSON config in qwen-vl-finetune/config.
+# Benchmark RobotWin Q2 latency from a JSON config in qwen-vl-finetune/config.
 set -euo pipefail
 
 source /media/damoxing/fileset/conda/bin/activate qwen3-vl-ft-min
@@ -15,6 +15,6 @@ fi
 
 PYTHON_BIN="${PYTHON_BIN:-python}"
 
-"${PYTHON_BIN}" "${FINETUNE_ROOT}/tools/eval/q1.py" \
+"${PYTHON_BIN}" "${FINETUNE_ROOT}/tools/eval/benchmark_q2_latency.py" \
   --config "${CONFIG}" \
   "$@"

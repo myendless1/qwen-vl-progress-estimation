@@ -6,6 +6,19 @@ cd /media/damoxing/fileset/Qwen3-VL
 FINETUNE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export PYTHONPATH="${FINETUNE_ROOT}:${PYTHONPATH:-}"
 
+if [[ "${SETUP_APT_DEPS:-true}" == "true" ]] && command -v apt-get >/dev/null 2>&1; then
+  if [[ -f /etc/apt/sources.list ]]; then
+    cp -n /etc/apt/sources.list /etc/apt/sources.list.bak
+    sed -i \
+      -e 's|archive.ubuntu.com|mirrors.baidubce.com|g' \
+      -e 's|security.ubuntu.com|mirrors.baidubce.com|g' \
+      /etc/apt/sources.list
+  fi
+  DEBIAN_FRONTEND=noninteractive apt-get update -y
+  DEBIAN_FRONTEND=noninteractive apt-get install -y \
+    ffmpeg xvfb rdma-core libibverbs1 ibverbs-providers infiniband-diags ibverbs-utils librdmacm1
+fi
+
 CONFIG="${1:-${CONFIG:-${FINETUNE_ROOT}/config/robotwin_qwen3vl_2b.json}}"
 if [[ $# -gt 0 ]]; then
   shift

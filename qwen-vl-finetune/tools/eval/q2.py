@@ -25,9 +25,34 @@ from tools.utils.robotwin_eval import (
     write_json,
 )
 from tools.utils.robotwin_video import build_episode_samples, collect_episode_annos, save_q2_video
+from robotwin_eval_config import apply_config_argv
+
+
+def _argv_has_option(argv, *names):
+    for index, arg in enumerate(argv):
+        if arg in names or any(arg.startswith(f"{name}=") for name in names):
+            return True
+        if index > 0 and argv[index - 1] in names:
+            return True
+    return False
+
+
+def _resolve_split_paths(args, original_argv):
+    split = "test" if args.split == "eval" else args.split
+    if not _argv_has_option(original_argv, "--sample-manifest"):
+        split_manifest = getattr(args, f"{split}_sample_manifest", None)
+        if split_manifest:
+            args.sample_manifest = split_manifest
+    if not _argv_has_option(original_argv, "--output-dir"):
+        split_output_dir = getattr(args, f"{split}_output_dir", None)
+        if split_output_dir:
+            args.output_dir = split_output_dir
+    return args
 
 
 def parse_args():
+    original_argv = sys.argv[1:]
+    apply_config_argv("q2")
     parser = argparse.ArgumentParser(description="Evaluate RobotWin Q2 current-done classification and progress regression.")
     parser.add_argument("--base-model", default="/media/damoxing/ckp/qwen_ft/Qwen3-VL-2B-Instruct")
     parser.add_argument("--checkpoint", default="/media/damoxing/ckp/qwen_ft/robotwin_qwen3vl_2b")
@@ -68,6 +93,10 @@ def parse_args():
             "If the path exists, samples are loaded from it; otherwise the current sampled set is written there."
         ),
     )
+    parser.add_argument("--train-sample-manifest", default=None)
+    parser.add_argument("--test-sample-manifest", default=None)
+    parser.add_argument("--train-output-dir", default=None)
+    parser.add_argument("--test-output-dir", default=None)
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--dtype", choices=("bf16", "fp16", "fp32"), default="bf16")
     parser.add_argument("--attn-implementation", default=os.environ.get("ATTN_IMPLEMENTATION", "sdpa"))
@@ -93,7 +122,7 @@ def parse_args():
     parser.add_argument("--video-width", type=int, default=1280)
     parser.add_argument("--video-top-height", type=int, default=720)
     parser.add_argument("--video-curve-height", type=int, default=420)
-    return parser.parse_args()
+    return _resolve_split_paths(parser.parse_args(), original_argv)
 
 
 def _sample_episode_index(sample):

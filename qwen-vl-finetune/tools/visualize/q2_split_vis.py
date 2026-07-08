@@ -13,6 +13,7 @@ TOOLS_ROOT = Path(__file__).resolve().parents[1]
 PROJECT_ROOT = TOOLS_ROOT.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 sys.path.insert(0, str(TOOLS_ROOT))
+sys.path.insert(0, str(TOOLS_ROOT / "eval"))
 
 from qwenvl.data.robotwin_processor import _robotwin_repo_dirs, parse_robotwin_views
 from tools.utils.robotwin_eval import load_eval_context, run_q2_predictions, write_csv, write_json
@@ -28,9 +29,33 @@ from tools.visualize.q2_raw_data import (
     safe_name,
 )
 from tools.utils.robotwin_video import save_q2_video
+from robotwin_eval_config import apply_config_argv
+
+
+def _argv_has_option(argv, *names):
+    for index, arg in enumerate(argv):
+        if arg in names or any(arg.startswith(f"{name}=") for name in names):
+            return True
+        if index > 0 and argv[index - 1] in names:
+            return True
+    return False
+
+
+def _resolve_split_output_dir(args, original_argv):
+    if _argv_has_option(original_argv, "--output-dir"):
+        return args
+    split = "test" if args.split == "eval" else args.split
+    for attr in (f"{split}_vis_output_dir", f"{split}_output_dir"):
+        value = getattr(args, attr, None)
+        if value:
+            args.output_dir = value
+            break
+    return args
 
 
 def parse_args():
+    original_argv = sys.argv[1:]
+    apply_config_argv("q2_vis")
     parser = argparse.ArgumentParser(
         description=(
             "Pick random episodes from one RobotWin split (default train), "
@@ -57,6 +82,14 @@ def parse_args():
     )
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--output-dir", default=None)
+    parser.add_argument("--train-output-dir", default=None, help=argparse.SUPPRESS)
+    parser.add_argument("--test-output-dir", default=None, help=argparse.SUPPRESS)
+    parser.add_argument("--train-vis-output-dir", default=None)
+    parser.add_argument("--test-vis-output-dir", default=None)
+    parser.add_argument("--train-sample-manifest", default=None, help=argparse.SUPPRESS)
+    parser.add_argument("--test-sample-manifest", default=None, help=argparse.SUPPRESS)
+    parser.add_argument("--max-samples", type=int, default=None, help=argparse.SUPPRESS)
+    parser.add_argument("--shuffle-samples", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--base-model", default="/media/damoxing/ckp/qwen_ft/Qwen3-VL-2B-Instruct")
     parser.add_argument("--checkpoint", required=True)
     parser.add_argument("--threshold", type=float, default=0.5)
@@ -68,11 +101,14 @@ def parse_args():
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--dtype", choices=("bf16", "fp16", "fp32"), default="bf16")
     parser.add_argument("--attn-implementation", default="sdpa")
+    parser.add_argument("--voting-done", action="store_true")
+    parser.add_argument("--done-vote-count", type=int, default=5)
+    parser.add_argument("--done-vote-threshold", type=int, default=3)
     parser.add_argument("--video-fps", type=float, default=2.0)
     parser.add_argument("--video-width", type=int, default=1280)
     parser.add_argument("--video-top-height", type=int, default=720)
     parser.add_argument("--video-curve-height", type=int, default=420)
-    return parser.parse_args()
+    return _resolve_split_output_dir(parser.parse_args(), original_argv)
 
 
 def resource_repo_dir(data_root: Path, anno_root: Optional[str], repo_name: str) -> Path:
