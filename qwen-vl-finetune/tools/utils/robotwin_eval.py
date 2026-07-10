@@ -380,8 +380,11 @@ def build_samples(args, kind: Optional[str] = None):
         test_ratio=args.test_ratio,
         split_seed=args.split_seed,
         anno_root=getattr(args, "anno_root", None),
+        anno_dir_name=getattr(args, "anno_dir", "anno"),
         views=views,
         q2_progress_bucket_size=float(getattr(args, "q2_progress_bucket_size", 0.01)),
+        memory_frames=int(getattr(args, "memory_frames", 1)),
+        memory_frame_stride=int(getattr(args, "memory_frame_stride", 1)),
     )
     return [sample for sample in samples if kind is None or sample.kind == kind]
 

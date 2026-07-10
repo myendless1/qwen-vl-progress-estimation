@@ -9,7 +9,7 @@ from typing import Any
 import numpy as np
 
 from .models import GripperEvent, StepSpec
-from .task_rules import RETREAT_MERGE_TASKS
+from .task_rules_fine import RETREAT_MERGE_TASKS
 
 
 LEFT_GRIPPER_DIM = 7
@@ -39,7 +39,7 @@ ARM_LABEL_FLIP = {
     "left": "right",
     "right": "left",
 }
-ATOMIC_ACTIONS = {"move", "open", "close", "press", "final"}
+ATOMIC_ACTIONS = {"move", "open", "close", "press", "handover", "final"}
 MOVE_ALIASES = {
     "move_to_close",
     "move_to_open",
@@ -81,11 +81,23 @@ def default_termination_flags(action: str) -> tuple[str, ...]:
         return ("gripper_open", "gripper_close", "current_arm_motion", "other_arm_motion")
     if action == "press":
         return ("gripper_open", "gripper_close", "other_arm_motion")
+    if action == "handover":
+        return ("handover_release", "gripper_open")
     return ("episode_end",)
 
 
 def termination_flags(step: StepSpec, action: str) -> set[str]:
     return set(step.terminates_on or default_termination_flags(action))
+
+
+def handover_release_arm(step: StepSpec) -> str | None:
+    match = re.search(r"\b(?:open|release)\b.*\b(left|right) arm\b", step.text, flags=re.IGNORECASE)
+    if match:
+        return match.group(1).lower()
+    match = re.search(r"\b(left|right) arm\b.*\b(?:open|release)\b", step.text, flags=re.IGNORECASE)
+    if match:
+        return match.group(1).lower()
+    return None
 
 
 def detect_gripper_events(
@@ -909,6 +921,48 @@ def assign_spans(
                     candidates.append(lift_candidate)
             boundary = choose_boundary(candidates)
 
+        elif action == "handover":
+            release_arm = handover_release_arm(step)
+            release_event = pick_event(
+                events,
+                "open",
+                prev_end,
+                release_arm if prefer_specified_arm else None,
+                used,
+                prefer_specified_arm=prefer_specified_arm and release_arm is not None,
+            )
+            search_start = event_end_frame(release_event) if release_event is not None else prev_end
+            candidates = upcoming_gripper_candidates(
+                events,
+                search_start,
+                used,
+                states,
+                start,
+                kinds={"open"},
+            )
+            if release_event is not None:
+                candidates = [
+                    candidate
+                    for candidate in candidates
+                    if candidate.matched_event is None
+                    or candidate.matched_event.arm != release_event.arm
+                    or candidate.matched_event.frame != release_event.frame
+                ]
+            if "other_arm_motion" in flags:
+                motion_arms = [other_arm(release_event.arm)] if release_event is not None else [next_step_arm(steps, i)]
+                candidates.extend(
+                    collect_motion_candidates(
+                        states,
+                        motion_arms,
+                        search_start + 1,
+                        n_frames - 1,
+                        threshold=OTHER_ARM_MOTION_START_THRESHOLD,
+                        rule="other_arm_motion",
+                    )
+                )
+            boundary = choose_boundary(candidates)
+            matched_event = release_event
+
         if boundary is not None:
             end = min(n_frames - 1, boundary.frame)
             boundary_source = boundary.source
@@ -953,10 +1007,42 @@ def assign_spans(
                 last_event_arm = boundary.matched_event.arm
         prev_end = end
     spans = describe_secondary_arm_motion(spans, states)
+    spans = merge_open_state_moves_into_previous(spans)
     spans = ensure_arm_mentions(spans)
     for new_index, span in enumerate(spans):
         span["subtask_index"] = new_index
     return spans
+
+
+def merge_open_state_moves_into_previous(spans: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Merge standalone motion after an open-gripper release into the prior subtask."""
+    if len(spans) < 2:
+        return spans
+    output: list[dict[str, Any]] = []
+    for span in spans:
+        span = dict(span)
+        if (
+            output
+            and str(span.get("subtask_type", "")) == "move"
+            and str(output[-1].get("subtask_type", "")) in {"open", "dual_open", "handover"}
+        ):
+            text = str(span.get("subtask_goal", ""))
+            if re.search(r"\b(retract|return|retreat|neutral pose|lift up|separate)\b", text, flags=re.IGNORECASE):
+                prev = output[-1]
+                prev_text = str(prev.get("subtask_goal", ""))
+                addon = text.rstrip(".")
+                if addon:
+                    prev["subtask_goal"] = (
+                        f"{prev_text.rstrip('.')} while {addon[0].lower() + addon[1:]}."
+                    )
+                prev["end_frame"] = span.get("end_frame", prev.get("end_frame"))
+                prev["boundary_source"] = span.get("boundary_source", prev.get("boundary_source"))
+                prev["truncation_rule"] = span.get("truncation_rule", prev.get("truncation_rule"))
+                continue
+        output.append(span)
+    for idx, item in enumerate(output):
+        item["subtask_index"] = idx
+    return output
 
 
 def arm_path_length(
@@ -1170,6 +1256,36 @@ def flip_arm_mentions(text: str) -> str:
     return text.replace("__LEFT_ARM__", "right arm").replace("__RIGHT_ARM__", "left arm")
 
 
+def flip_spatial_lr_mentions(text: str) -> str:
+    replacements = [
+        (r"\bleft to right\b", "__LEFT_TO_RIGHT__"),
+        (r"\bright to left\b", "__RIGHT_TO_LEFT__"),
+        (r"\bleft position\b", "__LEFT_POSITION__"),
+        (r"\bright position\b", "__RIGHT_POSITION__"),
+        (r"\bleft side\b", "__LEFT_SIDE__"),
+        (r"\bright side\b", "__RIGHT_SIDE__"),
+        (r"\bto the left of\b", "__TO_THE_LEFT_OF__"),
+        (r"\bto the right of\b", "__TO_THE_RIGHT_OF__"),
+        (r"\bon the left of\b", "__ON_THE_LEFT_OF__"),
+        (r"\bon the right of\b", "__ON_THE_RIGHT_OF__"),
+    ]
+    for pattern, placeholder in replacements:
+        text = re.sub(pattern, placeholder, text, flags=re.IGNORECASE)
+    return (
+        text
+        .replace("__LEFT_TO_RIGHT__", "right to left")
+        .replace("__RIGHT_TO_LEFT__", "left to right")
+        .replace("__LEFT_POSITION__", "right position")
+        .replace("__RIGHT_POSITION__", "left position")
+        .replace("__LEFT_SIDE__", "right side")
+        .replace("__RIGHT_SIDE__", "left side")
+        .replace("__TO_THE_LEFT_OF__", "to the right of")
+        .replace("__TO_THE_RIGHT_OF__", "to the left of")
+        .replace("__ON_THE_LEFT_OF__", "on the right of")
+        .replace("__ON_THE_RIGHT_OF__", "on the left of")
+    )
+
+
 def flip_boundary_arm_label(source: str) -> str:
     source = re.sub(r"(?<=_)left(?=_)", "__LEFT__", source)
     source = re.sub(r"(?<=_)right(?=_)", "__RIGHT__", source)
@@ -1177,9 +1293,9 @@ def flip_boundary_arm_label(source: str) -> str:
 
 
 def publish_actual_arm_labels(anno: dict[str, Any]) -> dict[str, Any]:
-    anno["task_goal"] = flip_arm_mentions(str(anno.get("task_goal", "")))
+    anno["task_goal"] = flip_spatial_lr_mentions(flip_arm_mentions(str(anno.get("task_goal", ""))))
     for subtask in anno.get("subtasks", []):
-        subtask["subtask_goal"] = flip_arm_mentions(str(subtask.get("subtask_goal", "")))
+        subtask["subtask_goal"] = flip_spatial_lr_mentions(flip_arm_mentions(str(subtask.get("subtask_goal", ""))))
         subtask["boundary_source"] = flip_boundary_arm_label(str(subtask.get("boundary_source", "")))
     metadata = anno.get("metadata", {})
     for event in metadata.get("detected_gripper_events", []):
@@ -1191,7 +1307,7 @@ def publish_actual_arm_labels(anno: dict[str, Any]) -> dict[str, Any]:
             if value in ARM_LABEL_FLIP:
                 scene_info[key] = ARM_LABEL_FLIP[value]
     metadata["arm_label_mapping"] = (
-        "annotation arm labels are flipped from state indices: "
-        "state-left is actual right, state-right is actual left"
+        "annotation arm labels and left/right spatial target labels are flipped "
+        "from state indices: state-left is actual right, state-right is actual left"
     )
     return anno

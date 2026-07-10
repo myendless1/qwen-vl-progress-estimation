@@ -9,6 +9,7 @@ episode-level orchestration entrypoint.
 from __future__ import annotations
 
 import argparse
+import importlib
 import json
 import re
 from pathlib import Path
@@ -19,24 +20,28 @@ import numpy as np
 from robotwin_vlm.alignment import (
     assign_spans,
     detect_gripper_events,
+    flip_spatial_lr_mentions,
     merge_stack_arm_switches,
     merge_tiny_post_gripper_motion,
     publish_actual_arm_labels,
     relabel_dual_container_first_place,
 )
+from robotwin_vlm.alignment_coarse import assign_coarse_spans
 from robotwin_vlm.models import GripperEvent, StepSpec, TaskContext
-from robotwin_vlm.task_rules import (
-    CHRONOLOGICAL_ARM_TASKS,
-    EXPECTED_TASK_SLUGS,
-    TASK_BUILDERS,
-    build_steps,
-    canonical_task_goal,
-    validate_task_registry,
-)
 
 
 DEFAULT_ROOT = Path("/media/damoxing/datasets/vae4d/lerobot-vae4d-org/robotwin_gt_depth")
 DEFAULT_RAW_ROOT = Path("/media/damoxing/datasets/robotwin-depth-f1")
+ANNOTATION_VERSIONS = {
+    "fine": "robotwin_vlm_fine_atomic_delayed_v3",
+    "coarse": "robotwin_vlm_coarse_v1",
+}
+
+
+def load_task_rules(granularity: str):
+    if granularity not in ANNOTATION_VERSIONS:
+        raise ValueError(f"unsupported annotation granularity: {granularity}")
+    return importlib.import_module(f"robotwin_vlm.task_rules_{granularity}")
 
 
 def read_jsonl(path: Path) -> list[dict[str, Any]]:
@@ -139,27 +144,40 @@ def annotate_episode(
     info_json: dict[str, Any],
     raw_root: Path,
     gripper_threshold: float,
+    granularity: str,
+    task_rules,
 ) -> dict[str, Any]:
     episode_index = int(episode["episode_index"])
     slug = task_slug_from_repo(repo)
     task_goal = episode.get("tasks", [""])[0] or ""
     if not task_goal:
         task_goal = episode.get("task", "")
-    task_goal = canonical_task_goal(slug, task_goal)
+    task_goal = task_rules.canonical_task_goal(slug, task_goal)
     states = load_states(episode_parquet_path(repo, episode_index, info_json))
     events = detect_gripper_events(states, threshold=gripper_threshold)
     scene_info = raw_scene_info(repo, raw_root, slug, raw_config_dir_from_repo(repo), episode_index)
-    steps = build_steps(slug, task_goal, scene_info, events)
-    subtasks = assign_spans(
-        steps,
-        events,
-        int(states.shape[0]),
-        states=states,
-        prefer_specified_arm=slug not in CHRONOLOGICAL_ARM_TASKS,
-    )
-    subtasks = merge_stack_arm_switches(subtasks, slug)
-    subtasks = merge_tiny_post_gripper_motion(subtasks, states)
-    subtasks = relabel_dual_container_first_place(subtasks, states, slug)
+    steps = task_rules.build_steps(slug, task_goal, scene_info, events)
+    if granularity == "coarse":
+        subtasks = assign_coarse_spans(
+            steps,
+            events,
+            int(states.shape[0]),
+            states=states,
+            merge_open_move_text=slug not in {"place_burger_fries", "place_container_plate"},
+        )
+        alignment_policy = "coarse motion segments with at most one terminal gripper event"
+    else:
+        subtasks = assign_spans(
+            steps,
+            events,
+            int(states.shape[0]),
+            states=states,
+            prefer_specified_arm=slug not in task_rules.CHRONOLOGICAL_ARM_TASKS,
+        )
+        subtasks = merge_stack_arm_switches(subtasks, slug)
+        subtasks = merge_tiny_post_gripper_motion(subtasks, states)
+        subtasks = relabel_dual_container_first_place(subtasks, states, slug)
+        alignment_policy = "atomic actions with simultaneous delayed termination candidates"
     anno = {
         "episode_index": episode_index,
         "repo": repo.name,
@@ -168,9 +186,10 @@ def annotate_episode(
         "num_frames": int(states.shape[0]),
         "subtasks": subtasks,
         "metadata": {
-            "annotation_version": "robotwin_vlm_atomic_delayed_v3",
+            "annotation_version": ANNOTATION_VERSIONS[granularity],
+            "annotation_granularity": granularity,
             "gripper_threshold": gripper_threshold,
-            "alignment_policy": "atomic actions with simultaneous delayed termination candidates",
+            "alignment_policy": alignment_policy,
             "detected_gripper_events": [
                 {
                     "frame": event.frame,
@@ -184,7 +203,14 @@ def annotate_episode(
             "scene_info": scene_info,
         },
     }
-    return publish_actual_arm_labels(anno)
+    # Do not flip left/right arm labels at publish time. The RoboTwin state
+    # indices are already consumed consistently by the rule/alignment code.
+    # return publish_actual_arm_labels(anno)
+    if slug not in {"place_a2b_left", "place_a2b_right"}:
+        anno["task_goal"] = flip_spatial_lr_mentions(str(anno.get("task_goal", "")))
+        for subtask in anno.get("subtasks", []):
+            subtask["subtask_goal"] = flip_spatial_lr_mentions(str(subtask.get("subtask_goal", "")))
+    return anno
 
 
 def iter_repos(root: Path, only: str | None) -> list[Path]:
@@ -199,14 +225,14 @@ def iter_repos(root: Path, only: str | None) -> list[Path]:
     return repos
 
 
-def print_rules(root: Path) -> None:
-    validate_task_registry()
+def print_rules(root: Path, granularity: str, task_rules) -> None:
+    task_rules.validate_task_registry()
     discovered = {task_slug_from_repo(repo) for repo in iter_repos(root, None)}
-    missing = discovered - TASK_BUILDERS.keys()
+    missing = discovered - task_rules.TASK_BUILDERS.keys()
     if missing:
         raise ValueError(f"dataset contains unregistered RoboTwin tasks: {sorted(missing)}")
-    for slug in sorted(EXPECTED_TASK_SLUGS):
-        print(f"{slug}: {len(build_steps(slug, '', {}))} subtasks")
+    for slug in sorted(task_rules.EXPECTED_TASK_SLUGS):
+        print(f"{slug}: {len(task_rules.build_steps(slug, '', {}))} {granularity} base rule steps")
 
 
 def main() -> None:
@@ -218,11 +244,19 @@ def main() -> None:
     parser.add_argument("--dry-run", action="store_true", help="Print examples without writing anno files.")
     parser.add_argument("--overwrite", action="store_true", help="Overwrite existing annotation files.")
     parser.add_argument("--gripper-threshold", type=float, default=0.5)
+    parser.add_argument(
+        "--granularity",
+        choices=tuple(ANNOTATION_VERSIONS),
+        default="fine",
+        help="Annotation granularity. fine writes anno_fine/; coarse writes anno_coarse/.",
+    )
     parser.add_argument("--print-rules", action="store_true", help="Print task slug to subtask-count mapping and exit.")
     args = parser.parse_args()
+    task_rules = load_task_rules(args.granularity)
     if args.print_rules:
-        print_rules(args.root)
+        print_rules(args.root, args.granularity, task_rules)
         return
+    anno_dir_name = f"anno_{args.granularity}"
     total = 0
     skipped = 0
     for repo in iter_repos(args.root, args.only):
@@ -232,7 +266,7 @@ def main() -> None:
             episodes = episodes[: args.limit]
         for episode in episodes:
             episode_index = int(episode["episode_index"])
-            out_path = repo / "anno" / f"episode_{episode_index:06d}.json"
+            out_path = repo / anno_dir_name / f"episode_{episode_index:06d}.json"
             if out_path.exists() and not args.overwrite and not args.dry_run:
                 skipped += 1
                 continue
@@ -243,6 +277,8 @@ def main() -> None:
                     info_json=info_json,
                     raw_root=args.raw_root,
                     gripper_threshold=args.gripper_threshold,
+                    granularity=args.granularity,
+                    task_rules=task_rules,
                 )
             except Exception as exc:
                 print(f"[ERROR] {repo.name} episode_{episode_index:06d}: {exc}")

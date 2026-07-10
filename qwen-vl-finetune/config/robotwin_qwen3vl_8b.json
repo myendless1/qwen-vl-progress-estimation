@@ -9,6 +9,8 @@
     "robotwin_data_root": "/media/damoxing/datasets/vae4d/lerobot-vae4d-org/robotwin_gt_depth",
     "robotwin_anno_root": "/media/damoxing/datasets/vae4d/lerobot-vae4d-org/robotwin_gt_depth",
     "robotwin_views": "main,left_wrist,right_wrist",
+    "robotwin_memory_frames": 4,
+    "robotwin_memory_frame_stride": 8,
     "robotwin_test_ratio": 0.05,
     "robotwin_q2_frame_stride": 1,
     "robotwin_q2_progress_bucket_size": 0.01,

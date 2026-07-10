@@ -10,6 +10,8 @@ COMMON_MAPPINGS = {
     ("data", "robotwin_data_root"): "data_root",
     ("data", "robotwin_anno_root"): "anno_root",
     ("data", "robotwin_views"): "views",
+    ("data", "robotwin_memory_frames"): "memory_frames",
+    ("data", "robotwin_memory_frame_stride"): "memory_frame_stride",
     ("data", "robotwin_test_ratio"): "test_ratio",
     ("data", "robotwin_q2_frame_stride"): "q2_frame_stride",
     ("data", "robotwin_boundary_extra_frames"): "boundary_extra_frames",

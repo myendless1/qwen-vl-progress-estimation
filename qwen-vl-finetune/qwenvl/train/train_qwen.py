@@ -439,6 +439,7 @@ def train(attn_implementation="flash_attention_2"):
                 test_ratio=data_args.robotwin_test_ratio,
                 split_seed=data_args.robotwin_split_seed,
                 anno_root=data_args.robotwin_anno_root,
+                anno_dir_name=getattr(data_args, "robotwin_anno_dir", "anno"),
             )
             rank0_print(f"Saved RobotWin split manifest to {split_path}")
         robotwin_query_token_ids = _add_robotwin_tokens(

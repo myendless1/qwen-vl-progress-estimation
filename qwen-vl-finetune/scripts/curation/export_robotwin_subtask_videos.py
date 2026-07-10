@@ -54,14 +54,14 @@ def write_json(path: Path, payload: Any) -> None:
         f.write("\n")
 
 
-def iter_repos(root: Path, only: str | None) -> list[Path]:
+def iter_repos(root: Path, only: str | None, anno_dir_name: str) -> list[Path]:
     repos: list[Path] = []
     for repo in sorted(root.iterdir()):
         if not repo.is_dir():
             continue
         if only and only not in repo.name:
             continue
-        if (repo / "meta" / "info.json").exists() and (repo / "anno").exists():
+        if (repo / "meta" / "info.json").exists() and (repo / anno_dir_name).exists():
             repos.append(repo)
     return repos
 
@@ -136,8 +136,14 @@ def sanitize_filename(text: str, max_len: int = 96) -> str:
     return text[:max_len].rstrip("_")
 
 
-def sample_annos(repo: Path, sample_count: int, seed: int, selection: str) -> list[Path]:
-    annos = sorted((repo / "anno").glob("episode_*.json"))
+def sample_annos(
+    repo: Path,
+    sample_count: int,
+    seed: int,
+    selection: str,
+    anno_dir_name: str,
+) -> list[Path]:
+    annos = sorted((repo / anno_dir_name).glob("episode_*.json"))
     if sample_count <= 0 or sample_count >= len(annos):
         return annos
     if selection == "first":
@@ -593,7 +599,7 @@ def export_contact_sheets(
                 cell_width=cell_width,
             )
             output_image.parent.mkdir(parents=True, exist_ok=True)
-            cv2.imwrite(str(output_image), sheet)
+            cv2.imwrite(str(output_image), cv2.cvtColor(sheet, cv2.COLOR_RGB2BGR))
         records.append(
             {
                 "repo": repo.name,
@@ -670,7 +676,7 @@ def render_review_episode(
         "-f",
         "rawvideo",
         "-pix_fmt",
-        "bgr24",
+        "rgb24",
         "-s",
         f"{width}x{height}",
         "-r",
@@ -771,6 +777,7 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--video-key", type=str, default=None, help="Full key or suffix, e.g. cam_main or cam_high.")
     parser.add_argument("--only", type=str, default=None, help="Only process repos whose names contain this string.")
+    parser.add_argument("--anno-dir-name", type=str, default="anno", help="Annotation directory inside each repo.")
     parser.add_argument("--review-scale", type=int, default=2, help="Scale factor for the middle video in review mode.")
     parser.add_argument("--review-width", type=int, default=960, help="Minimum canvas width in review mode.")
     parser.add_argument("--contact-window", type=int, default=3, help="Frames before/after each boundary for contact sheets.")
@@ -803,7 +810,7 @@ def main() -> None:
                 info = read_json(repo / "meta" / "info.json")
                 video_key = select_video_key(info, args.video_key)
                 episode_index = int(issue["episode_index"])
-                anno_path = repo / "anno" / f"episode_{episode_index:06d}.json"
+                anno_path = repo / args.anno_dir_name / f"episode_{episode_index:06d}.json"
                 all_records.append(
                     render_review_episode(
                         repo=repo,
@@ -829,7 +836,7 @@ def main() -> None:
         print(f"{action} {len(all_records)} issue review videos to {output_root}")
         return
 
-    repos = iter_repos(args.root, args.only)
+    repos = iter_repos(args.root, args.only, args.anno_dir_name)
     if args.one_per_task:
         repos = select_one_repo_per_task(repos)
 
@@ -837,7 +844,7 @@ def main() -> None:
         info = read_json(repo / "meta" / "info.json")
         try:
             video_key = select_video_key(info, args.video_key)
-            anno_paths = sample_annos(repo, args.sample_count, args.seed, args.selection)
+            anno_paths = sample_annos(repo, args.sample_count, args.seed, args.selection, args.anno_dir_name)
             for anno_path in anno_paths:
                 if args.mode == "clips":
                     all_records.extend(

@@ -24,8 +24,11 @@ from qwenvl.data.robotwin_processor import (
     Q2_SYSTEM_PROMPT,
     QUERY_TOKENS,
     RobotWinDataCollator,
+    VIEW_LABELS,
     _completed_subtasks,
     _load_observation_images,
+    _load_observation_image_sequence,
+    _memory_frame_indices,
     _messages_for_sample,
     _system_prompt,
     build_robotwin_query_attention_mask,
@@ -60,6 +63,8 @@ def parse_args():
     parser.add_argument("--split-seed", type=int, default=0)
     parser.add_argument("--max-episodes", type=int, default=None)
     parser.add_argument("--q2-frame-stride", type=int, default=8)
+    parser.add_argument("--memory-frames", type=int, default=1)
+    parser.add_argument("--memory-frame-stride", type=int, default=1)
     parser.add_argument("--q2-progress-bucket-size", type=float, default=0.01)
     parser.add_argument("--boundary-extra-frames", type=int, default=2)
     parser.add_argument("--model-max-length", type=int, default=4096)
@@ -109,14 +114,24 @@ def _cached_text(sample, views: Sequence[str]) -> Dict[str, Any]:
 
 
 def _content_with_fresh_observation(sample, cached: Dict[str, Any], views: Sequence[str], query_suffix: str):
-    images = _load_observation_images(sample.image_hdf5_paths, sample.frame_index, views)
+    memory_frame_indices = _memory_frame_indices(
+        sample.frame_index,
+        sample.memory_frames,
+        sample.memory_frame_stride,
+    )
+    if len(memory_frame_indices) == 1:
+        image_sequence = [(None, _load_observation_images(sample.image_hdf5_paths, sample.frame_index, views))]
+    else:
+        image_sequence = _load_observation_image_sequence(sample.image_hdf5_paths, memory_frame_indices, views)
     content = [{"type": "text", "text": cached["task_text"]}]
-    from qwenvl.data.robotwin_processor import VIEW_LABELS
 
-    for view in views:
-        content.append({"type": "text", "text": f"{VIEW_LABELS[view]} "})
-        content.append({"type": "image", "image": images[view]})
-        content.append({"type": "text", "text": "\n"})
+    for timestep, (image_frame, images) in enumerate(image_sequence):
+        if len(image_sequence) > 1:
+            content.append({"type": "text", "text": f"<time {timestep + 1} frame {image_frame}>\n"})
+        for view in views:
+            content.append({"type": "text", "text": f"{VIEW_LABELS[view]} "})
+            content.append({"type": "image", "image": images[view]})
+            content.append({"type": "text", "text": "\n"})
     content.append({"type": "text", "text": query_suffix})
     return content
 

@@ -1,7 +1,7 @@
 """Reusable RoboTwin VLM subtask annotation rules."""
 
 from .models import GripperEvent, StepSpec, TaskContext
-from .task_rules import (
+from .task_rules_fine import (
     CHRONOLOGICAL_ARM_TASKS,
     NO_RETREAT_TASKS,
     RETREAT_MERGE_TASKS,

@@ -73,6 +73,8 @@ def parse_args():
     parser.add_argument("--split-seed", type=int, default=0)
     parser.add_argument("--max-episodes", type=int, default=None)
     parser.add_argument("--q2-frame-stride", type=int, default=8)
+    parser.add_argument("--memory-frames", type=int, default=1)
+    parser.add_argument("--memory-frame-stride", type=int, default=1)
     parser.add_argument(
         "--q2-progress-bucket-size",
         type=float,
@@ -196,6 +198,8 @@ def load_or_write_sample_manifest(args, samples):
             "split_seed": args.split_seed,
             "q2_frame_stride": args.q2_frame_stride,
             "q2_progress_bucket_size": args.q2_progress_bucket_size,
+            "memory_frames": args.memory_frames,
+            "memory_frame_stride": args.memory_frame_stride,
             "boundary_extra_frames": args.boundary_extra_frames,
             "max_samples": args.max_samples,
             "sample_seed": args.sample_seed,

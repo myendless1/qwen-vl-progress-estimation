@@ -8,7 +8,10 @@
   "data": {
     "robotwin_data_root": "/media/damoxing/datasets/vae4d/lerobot-vae4d-org/robotwin_gt_depth",
     "robotwin_anno_root": "/media/damoxing/datasets/vae4d/lerobot-vae4d-org/robotwin_gt_depth",
+    "robotwin_anno_dir": "anno_coarse",
     "robotwin_views": "main,left_wrist,right_wrist",
+    "robotwin_memory_frames": 5,
+    "robotwin_memory_frame_stride": 8,
     "robotwin_test_ratio": 0.05,
     "robotwin_q2_frame_stride": 1,
     "robotwin_q2_progress_bucket_size": 0.01,
@@ -19,7 +22,7 @@
     "robotwin_exclude_episodes_if_exists": "/media/damoxing/fileset/Qwen3-VL/qwen-vl-finetune/scripts/curation/tests/robotwin_anno_eval_exclude_episodes.json"
   },
   "training": {
-    "output_dir": "/media/damoxing/ckp/qwen_ft/robotwin_qwen3vl_2b-f4",
+    "output_dir": "/media/damoxing/ckp/qwen_ft/robotwin_qwen3vl_2b-coarse-f5-s8",
     "robotwin_init_checkpoint_if_exists": "{output_dir}/pytorch_model.bin",
     "num_train_epochs": 5,
     "per_device_train_batch_size": 1,

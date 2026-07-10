@@ -8,13 +8,21 @@ DA3_SITE=$(/media/damoxing/fileset/conda/envs/da3/bin/python -c 'import site; pr
 ROOT="${ROOT:-/media/damoxing/datasets/vae4d/lerobot-vae4d-org/robotwin_gt_depth}"
 ISSUES_LOG="${ISSUES_LOG:-}"
 SEED="${SEED:-0}"
+GRANULARITY="${GRANULARITY:-coarse}"
+ANNO_DIR_NAME="${ANNO_DIR_NAME:-anno_${GRANULARITY}}"
+ONLY="${ONLY:-}"
 
 args=(
   --root "${ROOT}"
   --mode review
   --selection random
   --seed "${SEED}"
+  --anno-dir-name "${ANNO_DIR_NAME}"
 )
+
+if [[ -n "${ONLY}" ]]; then
+  args+=(--only "${ONLY}")
+fi
 
 if [[ -n "${ISSUES_LOG}" ]]; then
   OUTPUT="${OUTPUT:-${ROOT}/_subtask_review_videos/issue_samples_latest}"
@@ -25,7 +33,7 @@ if [[ -n "${ISSUES_LOG}" ]]; then
     --issue-sample-count "${ISSUE_SAMPLE_COUNT}"
   )
 else
-  OUTPUT="${OUTPUT:-${ROOT}/_subtask_review_videos/random_task_samples_3}"
+  OUTPUT="${OUTPUT:-${ROOT}/_subtask_review_videos/${GRANULARITY}_task_samples_3}"
   SAMPLE_COUNT="${SAMPLE_COUNT:-3}"
   args+=(
     --output "${OUTPUT}"
@@ -34,4 +42,4 @@ else
   )
 fi
 
-PYTHONPATH="$DA3_SITE" python /media/damoxing/fileset/Qwen3-VL/qwen-vl-finetune/scripts/curation/export_robotwin_subtask_videos.py "${args[@]}"
+PYTHONPATH="$DA3_SITE" python /media/damoxing/fileset/Qwen3-VL/qwen-vl-finetune/scripts/curation/export_robotwin_subtask_videos.py "${args[@]}" "$@"

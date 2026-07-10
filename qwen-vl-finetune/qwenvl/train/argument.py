@@ -23,10 +23,28 @@ class DataArguments:
             "help": "Optional root for RobotWin anno/meta/data parquet. Defaults to robotwin_data_root."
         },
     )
+    robotwin_anno_dir: str = field(
+        default="anno",
+        metadata={
+            "help": "Annotation directory name inside each RobotWin task directory, e.g. 'anno' or 'anno_coarse'."
+        },
+    )
     robotwin_views: str = field(
         default="main,left_wrist,right_wrist",
         metadata={
             "help": "Comma-separated RobotWin camera views to feed the model, e.g. 'main' or 'main,left_wrist,right_wrist'."
+        },
+    )
+    robotwin_memory_frames: int = field(
+        default=4,
+        metadata={
+            "help": "Number of temporal observation frames per RobotWin sample, including the current frame."
+        },
+    )
+    robotwin_memory_frame_stride: int = field(
+        default=8,
+        metadata={
+            "help": "Frame stride between RobotWin memory observations. At 16.67 FPS, 8 frames is about 0.5 seconds."
         },
     )
     robotwin_test_ratio: float = field(

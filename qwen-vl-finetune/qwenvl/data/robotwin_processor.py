@@ -3,7 +3,7 @@ import json
 import random
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Mapping, Optional, Sequence
 
 import h5py
 import torch
@@ -35,6 +35,8 @@ DONE_VOTING_QUERY_TOKENS = tuple(f"<current_query_{idx}>" for idx in range(DEFAU
 
 ROBOTWIN_IGNORE_FLOAT = -100.0
 PREV_DONE_MAX_FRAMES = 8
+DEFAULT_ROBOTWIN_MEMORY_FRAMES = 1
+DEFAULT_ROBOTWIN_MEMORY_FRAME_STRIDE = 1
 
 
 def robotwin_special_tokens(voting_done: bool = False, done_vote_count: int = DEFAULT_DONE_VOTE_COUNT) -> List[str]:
@@ -200,8 +202,13 @@ def _task_resource_repo_dir(data_root: Path, anno_root: Optional[str], task_name
     return data_root / task_name
 
 
-def _task_anno_dir(data_root: Path, anno_root: Optional[str], task_name: str) -> Path:
-    return _task_resource_repo_dir(data_root, anno_root, task_name) / "anno"
+def _task_anno_dir(
+    data_root: Path,
+    anno_root: Optional[str],
+    task_name: str,
+    anno_dir_name: str = "anno",
+) -> Path:
+    return _task_resource_repo_dir(data_root, anno_root, task_name) / anno_dir_name
 
 
 def _load_chunks_size(repo_dir: Path) -> int:
@@ -279,10 +286,30 @@ def _load_observation_images(
     return images
 
 
+def _memory_frame_indices(frame_index: int, memory_frames: int, memory_frame_stride: int) -> List[int]:
+    count = max(1, int(memory_frames))
+    stride = max(1, int(memory_frame_stride))
+    return [
+        max(0, int(frame_index) - (count - 1 - idx) * stride)
+        for idx in range(count)
+    ]
+
+
+def _load_observation_image_sequence(
+    image_hdf5_paths: Dict[str, Path],
+    frame_indices: Sequence[int],
+    views: Sequence[str],
+) -> List[tuple[int, Dict[str, Image.Image]]]:
+    return [
+        (int(frame_index), _load_observation_images(image_hdf5_paths, int(frame_index), views))
+        for frame_index in frame_indices
+    ]
+
+
 def _user_content(
     task_goal: str,
     completed: Sequence[Dict[str, Any]],
-    images: Dict[str, Image.Image],
+    images: Mapping[str, Image.Image] | Sequence[tuple[int, Mapping[str, Image.Image]]],
     views: Sequence[str],
     current_goal: Optional[str] = None,
     include_query_tokens: bool = False,
@@ -309,11 +336,21 @@ def _user_content(
             }
         )
     observation_label = "Image observation" if len(views) == 1 else "Image observations"
-    content.append({"type": "text", "text": f"{observation_label}:\n"})
-    for view in views:
-        content.append({"type": "text", "text": f"{VIEW_LABELS[view]} "})
-        content.append({"type": "image", "image": images[view]})
-        content.append({"type": "text", "text": "\n"})
+    if isinstance(images, Mapping):
+        image_sequence = [(None, images)]
+    else:
+        image_sequence = list(images)
+    if len(image_sequence) == 1:
+        content.append({"type": "text", "text": f"{observation_label}:\n"})
+    else:
+        content.append({"type": "text", "text": f"Historical {observation_label.lower()} (oldest to newest):\n"})
+    for timestep, (image_frame, frame_images) in enumerate(image_sequence):
+        if len(image_sequence) > 1:
+            content.append({"type": "text", "text": f"<time {timestep + 1} frame {image_frame}>\n"})
+        for view in views:
+            content.append({"type": "text", "text": f"{VIEW_LABELS[view]} "})
+            content.append({"type": "image", "image": frame_images[view]})
+            content.append({"type": "text", "text": "\n"})
     if include_query_tokens:
         content.append(
             {
@@ -356,6 +393,8 @@ class RobotWinSample:
     subtasks: List[Dict[str, Any]]
     current_subtask_index: int
     views: tuple[str, ...] = DEFAULT_ROBOTWIN_VIEWS
+    memory_frames: int = DEFAULT_ROBOTWIN_MEMORY_FRAMES
+    memory_frame_stride: int = DEFAULT_ROBOTWIN_MEMORY_FRAME_STRIDE
     image_repo_dir: Optional[Path] = None
     current_done: float = ROBOTWIN_IGNORE_FLOAT
     need_replan: float = ROBOTWIN_IGNORE_FLOAT
@@ -372,6 +411,7 @@ def _robotwin_repo_dirs(
     test_ratio: float = 0.05,
     split_seed: int = 0,
     anno_root: Optional[str] = None,
+    anno_dir_name: str = "anno",
 ) -> List[Path]:
     root = Path(data_root)
     if not root.exists():
@@ -381,7 +421,7 @@ def _robotwin_repo_dirs(
         image_repo_dir
         for image_repo_dir in root.iterdir()
         if image_repo_dir.is_dir()
-        and _task_anno_dir(root, anno_root, image_repo_dir.name).exists()
+        and _task_anno_dir(root, anno_root, image_repo_dir.name, anno_dir_name).exists()
     )
     if split is None or split == "all":
         return repo_dirs
@@ -412,6 +452,7 @@ def build_robotwin_split_manifest(
     test_ratio: float = 0.05,
     split_seed: int = 0,
     anno_root: Optional[str] = None,
+    anno_dir_name: str = "anno",
 ) -> Dict[str, Any]:
     root = Path(data_root)
     all_dirs = _robotwin_repo_dirs(
@@ -420,6 +461,7 @@ def build_robotwin_split_manifest(
         test_ratio=test_ratio,
         split_seed=split_seed,
         anno_root=anno_root,
+        anno_dir_name=anno_dir_name,
     )
     train_dirs = _robotwin_repo_dirs(
         data_root,
@@ -427,6 +469,7 @@ def build_robotwin_split_manifest(
         test_ratio=test_ratio,
         split_seed=split_seed,
         anno_root=anno_root,
+        anno_dir_name=anno_dir_name,
     )
     test_dirs = _robotwin_repo_dirs(
         data_root,
@@ -434,10 +477,12 @@ def build_robotwin_split_manifest(
         test_ratio=test_ratio,
         split_seed=split_seed,
         anno_root=anno_root,
+        anno_dir_name=anno_dir_name,
     )
     return {
         "data_root": str(root.resolve()),
         "anno_root": str(Path(anno_root).resolve()) if anno_root else str(root.resolve()),
+        "anno_dir": anno_dir_name,
         "test_ratio": test_ratio,
         "split_seed": split_seed,
         "num_tasks": len(all_dirs),
@@ -457,12 +502,14 @@ def save_robotwin_split_manifest(
     test_ratio: float = 0.05,
     split_seed: int = 0,
     anno_root: Optional[str] = None,
+    anno_dir_name: str = "anno",
 ) -> Path:
     manifest = build_robotwin_split_manifest(
         data_root,
         test_ratio=test_ratio,
         split_seed=split_seed,
         anno_root=anno_root,
+        anno_dir_name=anno_dir_name,
     )
     output_path = Path(output_dir) / "robotwin_split.json"
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -480,11 +527,17 @@ def build_robotwin_samples(
     test_ratio: float = 0.05,
     split_seed: int = 0,
     anno_root: Optional[str] = None,
+    anno_dir_name: str = "anno",
     views: Sequence[str] = DEFAULT_ROBOTWIN_VIEWS,
     exclude_episodes: Optional[set[tuple[str, int]]] = None,
     q2_progress_bucket_size: float = 0.01,
+    memory_frames: int = DEFAULT_ROBOTWIN_MEMORY_FRAMES,
+    memory_frame_stride: int = DEFAULT_ROBOTWIN_MEMORY_FRAME_STRIDE,
 ) -> List[RobotWinSample]:
     active_views = tuple(views)
+    active_memory_frames = max(1, int(memory_frames))
+    active_memory_frame_stride = max(1, int(memory_frame_stride))
+
     def make_q2_sample(
         repo_dir: Path,
         image_repo_dir: Path,
@@ -509,6 +562,8 @@ def build_robotwin_samples(
             subtasks=subtasks,
             current_subtask_index=current_subtask_index,
             views=active_views,
+            memory_frames=active_memory_frames,
+            memory_frame_stride=active_memory_frame_stride,
             image_repo_dir=image_repo_dir,
             current_done=current_done,
             need_replan=ROBOTWIN_IGNORE_FLOAT,
@@ -532,9 +587,10 @@ def build_robotwin_samples(
         test_ratio=test_ratio,
         split_seed=split_seed,
         anno_root=anno_root,
+        anno_dir_name=anno_dir_name,
     ):
         resource_repo_dir = _task_resource_repo_dir(data_root_path, anno_root, image_repo_dir.name)
-        anno_dir = resource_repo_dir / "anno"
+        anno_dir = resource_repo_dir / anno_dir_name
         if not anno_dir.exists():
             continue
         chunks_size = _load_chunks_size(resource_repo_dir)
@@ -598,6 +654,8 @@ def build_robotwin_samples(
                         subtasks=subtasks,
                         current_subtask_index=idx,
                         views=active_views,
+                        memory_frames=active_memory_frames,
+                        memory_frame_stride=active_memory_frame_stride,
                         image_repo_dir=image_repo_dir,
                         q1_done_start_frame=min(current_done_frames) if current_done_frames else None,
                     )
@@ -704,7 +762,15 @@ def _sample_frame_index(sample: RobotWinSample) -> int:
 def preprocess_robotwin_sample(sample: RobotWinSample, processor) -> Dict[str, torch.Tensor]:
     frame_index = _sample_frame_index(sample)
     views = sample.views
-    images = _load_observation_images(sample.image_hdf5_paths, frame_index, views)
+    memory_frame_indices = _memory_frame_indices(
+        frame_index,
+        sample.memory_frames,
+        sample.memory_frame_stride,
+    )
+    if len(memory_frame_indices) == 1:
+        images = _load_observation_images(sample.image_hdf5_paths, frame_index, views)
+    else:
+        images = _load_observation_image_sequence(sample.image_hdf5_paths, memory_frame_indices, views)
     if sample.kind == "q1":
         plan_start_index = q1_plan_start_index(
             sample.current_subtask_index,
@@ -755,6 +821,7 @@ def preprocess_robotwin_sample(sample: RobotWinSample, processor) -> Dict[str, t
     full_result["labels"] = labels
     full_result["input_ids"] = input_ids
     full_result["robotwin_frame_index"] = torch.tensor(frame_index, dtype=torch.long)
+    full_result["robotwin_memory_frame_indices"] = torch.tensor(memory_frame_indices, dtype=torch.long)
     full_result["robotwin_current_done"] = torch.tensor(sample.current_done, dtype=torch.float32)
     full_result["robotwin_need_replan"] = torch.tensor(sample.need_replan, dtype=torch.float32)
     full_result["robotwin_incident"] = torch.tensor(sample.incident, dtype=torch.float32)
@@ -787,7 +854,10 @@ class RobotWinDataset(Dataset):
             test_ratio=data_args.robotwin_test_ratio,
             split_seed=data_args.robotwin_split_seed,
             anno_root=data_args.robotwin_anno_root,
+            anno_dir_name=getattr(data_args, "robotwin_anno_dir", "anno"),
             views=parse_robotwin_views(data_args.robotwin_views),
+            memory_frames=int(getattr(data_args, "robotwin_memory_frames", DEFAULT_ROBOTWIN_MEMORY_FRAMES)),
+            memory_frame_stride=int(getattr(data_args, "robotwin_memory_frame_stride", DEFAULT_ROBOTWIN_MEMORY_FRAME_STRIDE)),
             exclude_episodes=load_robotwin_excluded_episodes(
                 getattr(data_args, "robotwin_exclude_episodes", None)
             ),
@@ -834,7 +904,10 @@ class RobotWinDataset(Dataset):
             f"undone={len(self.undone_samples)}, current_done={len(self.current_done_samples)}, "
             f"prev_done={len(self.prev_done_samples)}, "
             f"q1_prob={self.q1_sample_prob}, done_prob={self.done_sample_prob}, "
-            f"current_done_prob={self.current_done_sample_prob})"
+            f"current_done_prob={self.current_done_sample_prob}, "
+            f"anno_dir={getattr(data_args, 'robotwin_anno_dir', 'anno')}, "
+            f"memory_frames={getattr(data_args, 'robotwin_memory_frames', DEFAULT_ROBOTWIN_MEMORY_FRAMES)}, "
+            f"memory_frame_stride={getattr(data_args, 'robotwin_memory_frame_stride', DEFAULT_ROBOTWIN_MEMORY_FRAME_STRIDE)})"
         )
 
     def __len__(self):

@@ -28,10 +28,174 @@ from robotwin_vlm.alignment import (  # noqa: E402
     publish_actual_arm_labels,
     relabel_dual_container_first_place,
 )
+from robotwin_vlm.alignment_coarse import assign_coarse_spans  # noqa: E402
 from robotwin_vlm.models import GripperEvent, StepSpec  # noqa: E402
 
 
 class AlignmentTests(unittest.TestCase):
+    def test_publish_actual_arm_labels_flips_spatial_left_right(self) -> None:
+        anno = {
+            "task_goal": "Arrange the blocks from left to right.",
+            "subtasks": [
+                {
+                    "subtask_goal": "Place the red block at the right position with the left arm.",
+                    "boundary_source": "before_gripper_left_open",
+                },
+                {
+                    "subtask_goal": "Place the mouse to the left of the phone.",
+                    "boundary_source": "episode_end",
+                },
+            ],
+            "metadata": {
+                "detected_gripper_events": [{"arm": "left"}],
+                "scene_info": {"{a}": "right"},
+            },
+        }
+        published = publish_actual_arm_labels(anno)
+        self.assertEqual(published["task_goal"], "Arrange the blocks from right to left.")
+        self.assertEqual(
+            published["subtasks"][0]["subtask_goal"],
+            "Place the red block at the left position with the right arm.",
+        )
+        self.assertEqual(
+            published["subtasks"][1]["subtask_goal"],
+            "Place the mouse to the right of the phone.",
+        )
+        self.assertEqual(published["subtasks"][0]["boundary_source"], "before_gripper_right_open")
+        self.assertEqual(published["metadata"]["detected_gripper_events"][0]["arm"], "right")
+        self.assertEqual(published["metadata"]["scene_info"]["{a}"], "left")
+
+    def test_coarse_alignment_uses_move_then_close_as_single_grasp(self) -> None:
+        if not hasattr(numpy, "zeros"):
+            self.skipTest("numpy is not available")
+        states = numpy.zeros((40, 16), dtype=float)
+        states[5:16, 0] = numpy.linspace(0.0, 0.1, 11)
+        spans = assign_coarse_spans(
+            [StepSpec("Grasp the block with the left arm.", "close", "left")],
+            [GripperEvent(18, "left", "close", start_frame=17, end_frame=20)],
+            40,
+            states,
+        )
+        self.assertEqual(spans[0]["subtask_type"], "single_grasp")
+        self.assertEqual(spans[0]["start_frame"], 0)
+        self.assertEqual(spans[0]["gap_fill_policy"], "extended_to_episode_start")
+        self.assertEqual(spans[0]["end_frame"], 20)
+
+    def test_coarse_alignment_pending_gripper_does_not_decide_type(self) -> None:
+        if not hasattr(numpy, "zeros"):
+            self.skipTest("numpy is not available")
+        states = numpy.zeros((35, 16), dtype=float)
+        states[8:18, 0] = numpy.linspace(0.0, 0.1, 10)
+        spans = assign_coarse_spans(
+            [StepSpec("Move the left arm.", "move", "left")],
+            [GripperEvent(3, "left", "close", start_frame=2, end_frame=4)],
+            35,
+            states,
+        )
+        self.assertEqual(spans[0]["subtask_type"], "single_move")
+        self.assertEqual(spans[0]["start_frame"], 0)
+        self.assertEqual(spans[0]["gap_fill_policy"], "extended_to_episode_start")
+
+    def test_coarse_alignment_uses_dual_move_then_open_as_dual_place(self) -> None:
+        if not hasattr(numpy, "zeros"):
+            self.skipTest("numpy is not available")
+        states = numpy.zeros((40, 16), dtype=float)
+        states[5:16, 0] = numpy.linspace(0.0, 0.1, 11)
+        states[5:16, 8] = numpy.linspace(0.0, 0.1, 11)
+        spans = assign_coarse_spans(
+            [StepSpec("Place both objects with both arms.", "open")],
+            [
+                GripperEvent(18, "left", "open", start_frame=17, end_frame=20),
+                GripperEvent(19, "right", "open", start_frame=18, end_frame=21),
+            ],
+            40,
+            states,
+        )
+        self.assertEqual(spans[0]["subtask_type"], "dual_place")
+        self.assertEqual(spans[0]["end_frame"], 21)
+
+    def test_coarse_alignment_does_not_split_single_dual_single_transition(self) -> None:
+        if not hasattr(numpy, "zeros"):
+            self.skipTest("numpy is not available")
+        states = numpy.zeros((50, 16), dtype=float)
+        states[5:11, 0] = numpy.linspace(0.0, 0.05, 6)
+        states[11:18, 0] = numpy.linspace(0.05, 0.1, 7)
+        states[11:18, 8] = numpy.linspace(0.0, 0.05, 7)
+        states[18:26, 8] = numpy.linspace(0.05, 0.15, 8)
+        spans = assign_coarse_spans(
+            [StepSpec("Grasp the green block with the right arm.", "close", "right")],
+            [GripperEvent(28, "right", "close", start_frame=27, end_frame=30)],
+            50,
+            states,
+        )
+        self.assertEqual(len(spans), 1)
+        self.assertEqual(spans[0]["subtask_type"], "single_grasp")
+        self.assertEqual(spans[0]["start_frame"], 0)
+        self.assertEqual(spans[0]["gap_fill_policy"], "extended_to_episode_start")
+        self.assertEqual(spans[0]["end_frame"], 30)
+
+    def test_coarse_alignment_merges_final_open_state_move_into_place(self) -> None:
+        if not hasattr(numpy, "zeros"):
+            self.skipTest("numpy is not available")
+        states = numpy.zeros((50, 16), dtype=float)
+        states[5:12, 0] = numpy.linspace(0.0, 0.1, 7)
+        states[24:32, 0] = numpy.linspace(0.1, 0.2, 8)
+        spans = assign_coarse_spans(
+            [
+                StepSpec("Place the block on the pad with the left arm.", "open", "left"),
+                StepSpec("Move the left arm to a safe pose.", "move", "left"),
+            ],
+            [GripperEvent(15, "left", "open", start_frame=14, end_frame=16)],
+            50,
+            states,
+        )
+        self.assertEqual(len(spans), 1)
+        self.assertEqual(spans[0]["subtask_type"], "single_place")
+        self.assertEqual(spans[0]["end_frame"], 49)
+        self.assertNotIn("while", spans[0]["subtask_goal"].lower())
+
+    def test_coarse_alignment_keeps_final_closed_state_move_as_lift(self) -> None:
+        if not hasattr(numpy, "zeros"):
+            self.skipTest("numpy is not available")
+        states = numpy.zeros((50, 16), dtype=float)
+        states[5:12, 0] = numpy.linspace(0.0, 0.1, 7)
+        states[24:32, 2] = numpy.linspace(0.0, 0.2, 8)
+        spans = assign_coarse_spans(
+            [
+                StepSpec("Grasp the block with the left arm.", "close", "left"),
+                StepSpec("Lift the block with the left arm.", "move", "left"),
+            ],
+            [GripperEvent(15, "left", "close", start_frame=14, end_frame=16)],
+            50,
+            states,
+        )
+        self.assertEqual([span["subtask_type"] for span in spans], ["single_grasp", "single_move"])
+        self.assertEqual(spans[-1]["end_frame"], 49)
+
+    def test_coarse_alignment_merges_handover_release_with_receiver_place(self) -> None:
+        if not hasattr(numpy, "zeros"):
+            self.skipTest("numpy is not available")
+        states = numpy.zeros((40, 16), dtype=float)
+        states[5:13, 0] = numpy.linspace(0.0, 0.08, 8)
+        states[5:13, 8] = numpy.linspace(0.0, 0.08, 8)
+        states[16:24, 8] = numpy.linspace(0.08, 0.2, 8)
+        spans = assign_coarse_spans(
+            [
+                StepSpec("Open the gripper of the left arm to release the bottle.", "handover", "right"),
+                StepSpec("Move the right arm to drop the bottle into the dustbin.", "open", "right"),
+            ],
+            [
+                GripperEvent(10, "left", "open", start_frame=9, end_frame=12),
+                GripperEvent(25, "right", "open", start_frame=24, end_frame=27),
+            ],
+            40,
+            states,
+        )
+        self.assertEqual(len(spans), 1)
+        self.assertEqual(spans[0]["subtask_type"], "handover")
+        self.assertEqual(spans[0]["end_frame"], 27)
+        self.assertIn("while move the right arm to drop the bottle", spans[0]["subtask_goal"].lower())
+
     def test_assign_spans_uses_events_and_covers_episode(self) -> None:
         steps = [
             StepSpec("Grasp the block.", "close", "left"),

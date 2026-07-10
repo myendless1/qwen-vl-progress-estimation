@@ -58,6 +58,8 @@ def parse_args():
     parser.add_argument("--split-seed", type=int, default=0)
     parser.add_argument("--max-episodes", type=int, default=None)
     parser.add_argument("--q2-frame-stride", type=int, default=8)
+    parser.add_argument("--memory-frames", type=int, default=1)
+    parser.add_argument("--memory-frame-stride", type=int, default=1)
     parser.add_argument("--boundary-extra-frames", type=int, default=2)
     parser.add_argument("--model-max-length", type=int, default=4096)
     parser.add_argument("--max-samples", type=int, default=None)
