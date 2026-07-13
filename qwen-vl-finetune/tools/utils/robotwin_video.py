@@ -150,6 +150,7 @@ def collect_episode_annos(
     limit: int,
     selection: str = "random",
     seed: int = 0,
+    anno_dir_name: str = "anno",
 ) -> List[str]:
     split_arg = None if split == "all" else split
     annos = []
@@ -159,7 +160,7 @@ def collect_episode_annos(
         test_ratio=test_ratio,
         split_seed=split_seed,
     ):
-        for anno_path in sorted((repo_dir / "anno").glob("episode_*.json")):
+        for anno_path in sorted((repo_dir / anno_dir_name).glob("episode_*.json")):
             with open(anno_path, "r") as f:
                 anno = json.load(f)
             if not anno.get("subtasks") or not episode_has_images(repo_dir, anno):

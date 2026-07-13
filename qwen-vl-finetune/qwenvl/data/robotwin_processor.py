@@ -530,7 +530,7 @@ def build_robotwin_samples(
     anno_dir_name: str = "anno",
     views: Sequence[str] = DEFAULT_ROBOTWIN_VIEWS,
     exclude_episodes: Optional[set[tuple[str, int]]] = None,
-    q2_progress_bucket_size: float = 0.01,
+    q2_progress_bucket_size: float = 0.0,
     memory_frames: int = DEFAULT_ROBOTWIN_MEMORY_FRAMES,
     memory_frame_stride: int = DEFAULT_ROBOTWIN_MEMORY_FRAME_STRIDE,
 ) -> List[RobotWinSample]:
@@ -862,7 +862,7 @@ class RobotWinDataset(Dataset):
                 getattr(data_args, "robotwin_exclude_episodes", None)
             ),
             q2_progress_bucket_size=float(
-                getattr(data_args, "robotwin_q2_progress_bucket_size", 0.01)
+                getattr(data_args, "robotwin_q2_progress_bucket_size", 0.0)
             ),
         )
         self.q1_samples = [sample for sample in self.samples if sample.kind == "q1"]

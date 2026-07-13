@@ -17,6 +17,7 @@ from robotwin_vlm.prompts import (  # noqa: E402
     prompt_basket_object,
 )
 from robotwin_vlm.task_rules_fine import EXPECTED_TASK_SLUGS  # noqa: E402
+from robotwin_vlm.task_rules_coarse import build_steps as build_coarse_steps  # noqa: E402
 
 
 ATOMIC_RULE_HASHES = {
@@ -106,6 +107,31 @@ def rule_hash(steps: list[object]) -> str:
 
 
 class TaskRuleTests(unittest.TestCase):
+    def test_coarse_scan_object_uses_matching_object_and_scanner_arms(self) -> None:
+        cases = [
+            (
+                "Use the right arm to take the barcode scanner, then grab the red tea-box with the left arm, and scan it.",
+                "left",
+                "right",
+            ),
+            (
+                "Use the left arm to take the scanner, then grab the tea box with the right arm, and scan it.",
+                "right",
+                "left",
+            ),
+        ]
+        for prompt, object_arm, scanner_arm in cases:
+            with self.subTest(prompt=prompt):
+                steps = build_coarse_steps(
+                    "scan_object",
+                    prompt,
+                    {"{A}": "tea box", "{B}": "scanner", "{a}": object_arm, "{b}": scanner_arm},
+                )
+                self.assertEqual(steps[1].arm, object_arm)
+                self.assertIn(f"Move the {object_arm} arm holding the tea box to the scan pose.", steps[1].text)
+                self.assertEqual(steps[2].arm, scanner_arm)
+                self.assertIn(f"Move the {scanner_arm} arm holding the scanner to scan the tea box.", steps[2].text)
+
     def test_all_50_tasks_are_registered_once(self) -> None:
         self.assertEqual(len(TASK_BUILDERS), 50)
         self.assertEqual(set(TASK_BUILDERS), EXPECTED_TASK_SLUGS)

@@ -63,6 +63,11 @@ def parse_args():
         help="Optional anno/meta root. When set, images come from --data-root and annotations from --anno-root.",
     )
     parser.add_argument(
+        "--anno-dir",
+        default="anno",
+        help="Annotation directory name inside each RobotWin task directory.",
+    )
+    parser.add_argument(
         "--views",
         default="main,left_wrist,right_wrist",
         help="Comma-separated camera views, e.g. 'main' or 'main,left_wrist,right_wrist'.",
@@ -192,6 +197,7 @@ def load_or_write_sample_manifest(args, samples):
         {
             "data_root": args.data_root,
             "anno_root": args.anno_root,
+            "anno_dir": args.anno_dir,
             "views": args.views,
             "split": args.split,
             "test_ratio": args.test_ratio,
@@ -223,6 +229,7 @@ def run_video_visualization(args, context, output_dir):
         limit=args.video_cases,
         selection=args.video_case_selection,
         seed=args.video_case_seed,
+        anno_dir_name=args.anno_dir,
     )
     results = []
     for index, anno_path in enumerate(annos):
@@ -281,6 +288,7 @@ def main():
             "base_model": args.base_model,
             "data_root": args.data_root,
             "anno_root": args.anno_root,
+            "anno_dir": args.anno_dir,
             "views": args.views,
             "split": args.split,
             "test_ratio": args.test_ratio,
@@ -300,6 +308,7 @@ def main():
         "base_model": args.base_model,
         "data_root": args.data_root,
         "anno_root": args.anno_root,
+        "anno_dir": args.anno_dir,
         "views": args.views,
         "split": args.split,
         "test_ratio": args.test_ratio,

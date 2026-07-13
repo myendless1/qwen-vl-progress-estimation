@@ -9,6 +9,7 @@ COMMON_MAPPINGS = {
     ("model", "model_name_or_path"): "base_model",
     ("data", "robotwin_data_root"): "data_root",
     ("data", "robotwin_anno_root"): "anno_root",
+    ("data", "robotwin_anno_dir"): "anno_dir",
     ("data", "robotwin_views"): "views",
     ("data", "robotwin_memory_frames"): "memory_frames",
     ("data", "robotwin_memory_frame_stride"): "memory_frame_stride",

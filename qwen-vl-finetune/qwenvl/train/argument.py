@@ -62,11 +62,12 @@ class DataArguments:
         },
     )
     robotwin_q2_progress_bucket_size: float = field(
-        default=0.01,
+        default=0.0,
         metadata={
             "help": (
                 "Bucket width for RobotWin Q2 undone progress sampling. "
-                "One frame is kept per bucket; <=0 disables bucketing and uses frame stride."
+                "One frame is kept per bucket; <=0 disables bucketing and uses every frame "
+                "when robotwin_q2_frame_stride=1."
             )
         },
     )

@@ -13,7 +13,7 @@
     "robotwin_memory_frame_stride": 8,
     "robotwin_test_ratio": 0.05,
     "robotwin_q2_frame_stride": 1,
-    "robotwin_q2_progress_bucket_size": 0.01,
+    "robotwin_q2_progress_bucket_size": 0.0,
     "robotwin_boundary_extra_frames": 2,
     "robotwin_q1_sample_prob": 0.5,
     "robotwin_done_sample_prob": 0.4,

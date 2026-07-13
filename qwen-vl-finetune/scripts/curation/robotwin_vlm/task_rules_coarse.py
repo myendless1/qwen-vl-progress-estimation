@@ -326,14 +326,27 @@ def build_steps(
         grasp_text = _dual_text_for_gripper(fine_steps[0], StepSpec("", "close")) if fine_steps else "Grasp the scanner and the object with both arms."
         match = re.search(r"grasping the (.+?) with the (left|right) arm", grasp_text, flags=re.IGNORECASE)
         scanner = match.group(1) if match else "scanner"
+        scanner_arm = fine_steps[-1].arm if fine_steps else None
+        scanner_arm = scanner_arm or (match.group(2).lower() if match else second_arm)
         held_obj = "object"
+        object_arm = fine_steps[-2].arm if len(fine_steps) >= 2 else None
         first = re.search(r"Grasp the (.+?) with the (left|right) arm while", grasp_text, flags=re.IGNORECASE)
         if first:
             held_obj = first.group(1) if first.group(1) != scanner else held_obj
+            object_arm = object_arm or first.group(2).lower()
+        object_arm = object_arm or first_arm
         return [
             StepSpec(grasp_text, "close"),
-            StepSpec(f"Lift the {held_obj} to the scan position.", "move", first_arm),
-            StepSpec(f"Move the {scanner} to scan the held {held_obj}.", "move", second_arm),
+            StepSpec(
+                f"Move the {object_arm} arm holding the {held_obj} to the scan pose.",
+                "move",
+                object_arm,
+            ),
+            StepSpec(
+                f"Move the {scanner_arm} arm holding the {scanner} to scan the {held_obj}.",
+                "move",
+                scanner_arm,
+            ),
         ]
     if slug == "shake_bottle":
         close_events = [event for event in events or [] if event.kind == "close"]

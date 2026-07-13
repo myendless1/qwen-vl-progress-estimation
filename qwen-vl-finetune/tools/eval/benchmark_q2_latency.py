@@ -57,6 +57,7 @@ def parse_args():
     parser.add_argument("--model-b-checkpoint", default="/media/damoxing/ckp/qwen_ft/robotwin_qwen3vl_8b/checkpoint-44000")
     parser.add_argument("--data-root", default="/media/damoxing/datasets/vae4d/lerobot-vae4d-org/robotwin_gt_depth")
     parser.add_argument("--anno-root", default=None)
+    parser.add_argument("--anno-dir", default="anno")
     parser.add_argument("--views", default="main,left_wrist,right_wrist")
     parser.add_argument("--split", choices=("train", "test", "all"), default="train")
     parser.add_argument("--test-ratio", type=float, default=0.05)
@@ -282,6 +283,8 @@ def main():
         "split": args.split,
         "test_ratio": args.test_ratio,
         "split_seed": args.split_seed,
+        "anno_root": args.anno_root,
+        "anno_dir": args.anno_dir,
         "views": args.views,
         "q2_frame_stride": args.q2_frame_stride,
         "boundary_extra_frames": args.boundary_extra_frames,

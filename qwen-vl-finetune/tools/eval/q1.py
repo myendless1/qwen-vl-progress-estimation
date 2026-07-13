@@ -47,6 +47,11 @@ def parse_args():
         help="Optional anno/meta root. When set, images come from --data-root and annotations from --anno-root.",
     )
     parser.add_argument(
+        "--anno-dir",
+        default="anno",
+        help="Annotation directory name inside each RobotWin task directory.",
+    )
+    parser.add_argument(
         "--views",
         default="main,left_wrist,right_wrist",
         help="Comma-separated camera views, e.g. 'main' or 'main,left_wrist,right_wrist'.",
@@ -389,6 +394,8 @@ def main():
         "checkpoint": args.checkpoint,
         "base_model": args.base_model,
         "data_root": args.data_root,
+        "anno_root": args.anno_root,
+        "anno_dir": args.anno_dir,
         "split": args.split,
         "test_ratio": args.test_ratio,
         "split_seed": args.split_seed,

@@ -14,7 +14,7 @@
     "robotwin_memory_frame_stride": 8,
     "robotwin_test_ratio": 0.05,
     "robotwin_q2_frame_stride": 1,
-    "robotwin_q2_progress_bucket_size": 0.01,
+    "robotwin_q2_progress_bucket_size": 0.0,
     "robotwin_boundary_extra_frames": 2,
     "robotwin_q1_sample_prob": 0.5,
     "robotwin_done_sample_prob": 0.4,
@@ -22,7 +22,7 @@
     "robotwin_exclude_episodes_if_exists": "/media/damoxing/fileset/Qwen3-VL/qwen-vl-finetune/scripts/curation/tests/robotwin_anno_eval_exclude_episodes.json"
   },
   "training": {
-    "output_dir": "/media/damoxing/ckp/qwen_ft/robotwin_qwen3vl_2b-coarse-f5-s8",
+    "output_dir": "/media/damoxing/ckp/qwen_ft/robotwin_qwen3vl_2b-coarse-f5-s8-fix1",
     "robotwin_init_checkpoint_if_exists": "{output_dir}/pytorch_model.bin",
     "num_train_epochs": 5,
     "per_device_train_batch_size": 1,
@@ -38,5 +38,58 @@
     "save_total_limit": 3,
     "report_to": "tensorboard",
     "logging_steps": 10
+  },
+  "eval": {
+    "split": "train",
+    "split_seed": 0,
+    "q2_frame_stride": 8,
+    "boundary_extra_frames": 2,
+    "shuffle_samples": true,
+    "device": "cuda",
+    "q1": {
+      "checkpoint": "{output_dir}/checkpoint-24000",
+      "output_json": "{output_dir}/eval_q1_ckpt_24000_3cam_rgb_train_50tasks/q1_predictions.json",
+      "output_xlsx": null,
+      "one_episode_per_task_all_undone_subtasks": true,
+      "subsequent_windows": "1,3,5",
+      "max_tasks": 50,
+      "voting_done": false,
+      "done_vote_count": 5
+    },
+    "q2": {
+      "checkpoint": "{output_dir}/checkpoint-24000",
+      "train_output_dir": "{output_dir}/eval_q2_ckpt_24000_3cam_rgb_train",
+      "test_output_dir": "{output_dir}/eval_q2_ckpt_24000_3cam_rgb_test",
+      "batch_size": 32,
+      "max_samples": 5000,
+      "train_sample_manifest": "/media/damoxing/ckp/qwen_ft/robotwin_q2_eval_manifests/train_seed0_5000_q2_stride8_bucket001_anno_coarse.json",
+      "test_sample_manifest": "/media/damoxing/ckp/qwen_ft/robotwin_q2_eval_manifests/test_seed0_5000_q2_stride8_bucket001_anno_coarse.json",
+      "voting_done": false,
+      "done_vote_count": 5,
+      "done_vote_threshold": 3
+    },
+    "q2_vis": {
+      "train_vis_output_dir": "{output_dir}/q2_train_vis_ckpt_24000",
+      "test_vis_output_dir": "{output_dir}/q2_test_vis_ckpt_24000",
+      "num_tasks": 15,
+      "per_repo_episodes": 1,
+      "seed": 0,
+      "batch_size": 4,
+      "q2_frame_stride": 1,
+      "video_fps": 2.0
+    },
+    "q2_bench": {
+      "model_a_name": "2b-coarse-f5-s8",
+      "model_a_base_model": "/media/damoxing/ckp/qwen_ft/Qwen3-VL-2B-Instruct",
+      "model_a_checkpoint": "{output_dir}/checkpoint-24000",
+      "model_b_name": "8b",
+      "model_b_base_model": "/media/damoxing/ckp/qwen_ft/Qwen3-VL-8B-Instruct",
+      "model_b_checkpoint": "/media/damoxing/ckp/qwen_ft/robotwin_qwen3vl_8b/checkpoint-44000",
+      "max_samples": 32,
+      "warmup_iters": 8,
+      "timed_iters": 30,
+      "batch_size": 1,
+      "output_json": "{output_dir}/q2_latency_2b_coarse_f5_s8_vs_8b.json"
+    }
   }
 }

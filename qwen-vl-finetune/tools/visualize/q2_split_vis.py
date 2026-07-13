@@ -64,6 +64,7 @@ def parse_args():
     )
     parser.add_argument("--data-root", default="/media/damoxing/datasets/vae4d/lerobot-vae4d-org/robotwin_gt_depth")
     parser.add_argument("--anno-root", default=None)
+    parser.add_argument("--anno-dir", default="anno")
     parser.add_argument("--views", default="main,left_wrist,right_wrist")
     parser.add_argument("--split", choices=("train", "test", "all"), default="train")
     parser.add_argument("--test-ratio", type=float, default=0.05)
@@ -93,6 +94,8 @@ def parse_args():
     parser.add_argument("--base-model", default="/media/damoxing/ckp/qwen_ft/Qwen3-VL-2B-Instruct")
     parser.add_argument("--checkpoint", required=True)
     parser.add_argument("--threshold", type=float, default=0.5)
+    parser.add_argument("--memory-frames", type=int, default=1)
+    parser.add_argument("--memory-frame-stride", type=int, default=1)
     parser.add_argument("--q2-frame-stride", type=int, default=1)
     parser.add_argument("--q2-progress-bucket-size", type=float, default=0.01)
     parser.add_argument("--boundary-extra-frames", type=int, default=2)
@@ -120,6 +123,7 @@ def resource_repo_dir(data_root: Path, anno_root: Optional[str], repo_name: str)
 def select_episode_refs(
     data_root: str,
     anno_root: Optional[str],
+    anno_dir_name: str,
     split: str,
     test_ratio: float,
     split_seed: int,
@@ -135,6 +139,7 @@ def select_episode_refs(
             test_ratio=test_ratio,
             split_seed=split_seed,
             anno_root=anno_root,
+            anno_dir_name=anno_dir_name,
         )
     )
     if not repo_dirs:
@@ -151,7 +156,7 @@ def select_episode_refs(
     per_repo_episodes = max(1, per_repo_episodes)
     for image_repo_dir in repo_dirs:
         resource_dir = resource_repo_dir(data_root_path, anno_root, image_repo_dir.name)
-        anno_paths = sorted((resource_dir / "anno").glob("episode_*.json"))
+        anno_paths = sorted((resource_dir / anno_dir_name).glob("episode_*.json"))
         if not anno_paths:
             continue
         pick_count = min(per_repo_episodes, len(anno_paths))
@@ -248,6 +253,7 @@ def main():
     episode_refs = select_episode_refs(
         args.data_root,
         args.anno_root,
+        args.anno_dir,
         args.split,
         args.test_ratio,
         args.split_seed,
@@ -263,6 +269,7 @@ def main():
     vis_args = SimpleNamespace(
         data_root=args.data_root,
         anno_root=args.anno_root,
+        anno_dir=args.anno_dir,
         q2_frame_stride=args.q2_frame_stride,
         q2_progress_bucket_size=args.q2_progress_bucket_size,
         boundary_extra_frames=args.boundary_extra_frames,
@@ -283,7 +290,10 @@ def main():
         "base_model": args.base_model,
         "data_root": args.data_root,
         "anno_root": args.anno_root,
+        "anno_dir": args.anno_dir,
         "views": args.views,
+        "memory_frames": args.memory_frames,
+        "memory_frame_stride": args.memory_frame_stride,
         "q2_frame_stride": args.q2_frame_stride,
         "q2_progress_bucket_size": args.q2_progress_bucket_size,
         "output_dir": str(output_dir),
@@ -305,6 +315,9 @@ def main():
                 views,
                 resolve_image_repo_dir(args, episode["repo"]),
             )
+            for sample in samples:
+                sample.memory_frames = args.memory_frames
+                sample.memory_frame_stride = args.memory_frame_stride
             rows = run_q2_predictions(
                 args,
                 samples,
