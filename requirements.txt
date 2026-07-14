@@ -1,0 +1,31 @@
+# PyTorch CUDA 12.8 wheels used by the qwen3-vl-ft-min environment.
+--extra-index-url https://download.pytorch.org/whl/cu128
+
+# Model runtime
+torch==2.11.0+cu128
+torchvision==0.26.0+cu128
+transformers==5.12.0
+accelerate==1.14.0
+qwen-vl-utils==0.0.14
+
+# Fine-tuning
+deepspeed==0.19.2
+peft==0.19.1
+safetensors==0.8.0
+tensorboard==2.20.0
+
+# Multimodal data processing
+av==17.1.0
+h5py==3.16.0
+numpy==2.2.6
+pandas==2.3.3
+pillow==12.2.0
+pyarrow==24.0.0
+tqdm==4.68.2
+
+# Hub and configuration utilities
+hf-transfer==0.1.9
+huggingface-hub==1.19.0
+packaging==26.2
+PyYAML==6.0.3
+requests==2.34.2

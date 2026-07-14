@@ -129,6 +129,17 @@ We are preparing [cookbooks](https://github.com/QwenLM/Qwen3-VL/tree/main/cookbo
 
 Below, we provide simple examples to show how to use Qwen3-VL with 🤖 ModelScope and 🤗 Transformers.
 
+### Environment
+
+The `qwen3-vl-ft-min` environment uses **Python 3.10.20**. Install its core
+runtime, fine-tuning, and data-processing dependencies with:
+
+```bash
+conda create -n qwen3-vl-ft-min python=3.10.20 pip
+conda activate qwen3-vl-ft-min
+pip install -r requirements.txt
+```
+
 ```
 # The Qwen3-VL model requires transformers >= 4.57.0
 pip install "transformers>=4.57.0"
