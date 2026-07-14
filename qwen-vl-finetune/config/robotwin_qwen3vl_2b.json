@@ -62,8 +62,8 @@
       "test_output_dir": "{output_dir}/eval_q2_ckpt_24000_3cam_rgb_test",
       "batch_size": 32,
       "max_samples": 5000,
-      "train_sample_manifest": "/media/damoxing/ckp/qwen_ft/robotwin_q2_eval_manifests/train_seed0_5000_q2_stride8_bucket001_anno_coarse.json",
-      "test_sample_manifest": "/media/damoxing/ckp/qwen_ft/robotwin_q2_eval_manifests/test_seed0_5000_q2_stride8_bucket001_anno_coarse.json",
+      "train_sample_manifest": "/media/damoxing/ckp/qwen_ft/robotwin_q2_eval_manifests/train_seed0_5000_q2_stride8_bucket0_anno_coarse.json",
+      "test_sample_manifest": "/media/damoxing/ckp/qwen_ft/robotwin_q2_eval_manifests/test_seed0_5000_q2_stride8_bucket0_anno_coarse.json",
       "voting_done": false,
       "done_vote_count": 5,
       "done_vote_threshold": 3
